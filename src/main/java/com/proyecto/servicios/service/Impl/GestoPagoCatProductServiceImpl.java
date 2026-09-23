@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.event.EventListener;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -116,10 +117,11 @@ public class GestoPagoCatProductServiceImpl implements GestoPagoCatProductServic
             throw new GestoPagoCatProductException("Error de conexion con el servicio GestoPago: " + ex.getMessage(), ex);
         }
 
-        if (respuestaHttp == null || !respuestaHttp.getStatusCode().is2xxSuccessful()) {
+        if (respuestaHttp == null || !HttpStatusCode.valueOf(200).equals(respuestaHttp.getStatusCode())) {
             int codigoHttp = respuestaHttp == null ? -1 : respuestaHttp.getStatusCode().value();
             throw new GestoPagoCatProductException(
-                    "El servicio GestoPago respondio con codigo HTTP " + codigoHttp + ", se esperaba 200");
+                    "El servicio GestoPago respondio con codigo HTTP " + codigoHttp
+                            + "; no se modifica el catalogo, se conserva el anterior");
         }
 
         String xml = respuestaHttp.getBody();
