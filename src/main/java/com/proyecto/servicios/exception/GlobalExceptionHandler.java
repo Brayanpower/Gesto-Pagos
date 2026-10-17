@@ -81,6 +81,24 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(response, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(UsuarioNotFoundException.class)
+    public ResponseEntity<GenericResponse> handleUsuarioNotFound(UsuarioNotFoundException ex) {
+        log.warn("Usuario inexistente: {}", ex.getMessage());
+        GenericResponse response = new GenericResponse();
+        response.setCodigo(HttpStatus.NOT_FOUND.value());
+        response.setMensaje(ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(ReglaNegocioException.class)
+    public ResponseEntity<GenericResponse> handleReglaNegocio(ReglaNegocioException ex) {
+        log.warn("Regla de negocio del sistema violada: {}", ex.getMessage());
+        GenericResponse response = new GenericResponse();
+        response.setCodigo(HttpStatus.BAD_REQUEST.value());
+        response.setMensaje(ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.BAD_REQUEST);
+    }
+
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<GenericResponse> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
         log.warn("Violacion de restriccion de integridad (unicidad o llave foranea): {}", ex.getMostSpecificCause().getMessage());

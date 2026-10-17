@@ -28,7 +28,8 @@ public class OpenApi {
                                 .email("soporte@banco.com"))
                         .license(new License().name("Apache 2.0").url("https://springdoc.org")))
                 .servers(List.of(
-                        new Server().url("http://localhost:8080").description("Servidor Local de Desarrollo")
+                        new Server().url("http://localhost:8080").description("Servidor Local de Desarrollo"),
+                        new Server().url("https://hassani-1-0-1.onrender.com").description("Servidor Render")
                 ))
                 .components(new Components()
                         .addSecuritySchemes("BearerAuth", new SecurityScheme()
