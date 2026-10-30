@@ -83,6 +83,33 @@ class CatalogoServiceImplTest {
         assertEquals("ABIB 100", catalogo.get(0).getNombreProducto());
     }
 
+    @Test
+    @DisplayName("validarYObtenerProducto retorna el producto cuando servicio y producto existen")
+    void validarYObtenerProducto_exito() {
+        CatalogoProducto prod = new CatalogoProducto();
+        prod.setIdServicio("2284");
+        prod.setIdProducto("14302");
+        prod.setPrecio("100.0");
+
+        when(catalogoProductoRepository.count()).thenReturn(10L);
+        when(catalogoProductoRepository.existsByIdServicio("2284")).thenReturn(true);
+        when(catalogoProductoRepository.findFirstByIdServicioAndIdProducto("2284", "14302"))
+                .thenReturn(java.util.Optional.of(prod));
+
+        CatalogoProducto encontrado = servicio.validarYObtenerProducto(2284, 14302);
+        assertEquals("14302", encontrado.getIdProducto());
+    }
+
+    @Test
+    @DisplayName("validarYObtenerProducto rechaza cuando el servicio o producto no existen")
+    void validarYObtenerProducto_inexistente_lanzaExcepcion() {
+        when(catalogoProductoRepository.count()).thenReturn(10L);
+        when(catalogoProductoRepository.existsByIdServicio("9999")).thenReturn(false);
+
+        assertThrows(com.proyecto.servicios.exception.ReglaNegocioException.class,
+                () -> servicio.validarYObtenerProducto(9999, 14302));
+    }
+
     private static GestoPagoCatProductResponse respuestaConDosProductos() {
         GestoPagoCatProductResponse respuesta = new GestoPagoCatProductResponse();
         Mensaje mensaje = new Mensaje();
