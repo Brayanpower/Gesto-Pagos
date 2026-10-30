@@ -10,4 +10,6 @@ public interface CatalogoService {
     void reemplazarCatalogo(GestoPagoCatProductResponse response);
 
     List<CatalogoProducto> obtenerCatalogo();
+
+    CatalogoProducto validarYObtenerProducto(Integer idServicio, Integer idProducto);
 }

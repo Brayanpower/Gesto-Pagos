@@ -1,50 +1,35 @@
 # ======================================================================
-#  Plantilla de configuración - Spring Boot
-#  Copiar a application.properties y ajustar por entorno
+#  Plantilla de configuración segura - Sistema Bancario Core + GestoPago
+#  Inyectar secretos mediante variables de entorno o Gestor de Secretos
 # ======================================================================
 
-# ----------------------------------------------------------------------
-# Config Server (deshabilitado si no se usa)
-# ----------------------------------------------------------------------
-#spring.config.import=optional:configserver:
 spring.cloud.config.enabled=false
-spring.jackson.time-zone=<ZONA_HORARIA>            # Ej: America/Mexico_City
-
-# ----------------------------------------------------------------------
-# Servidor
-# ----------------------------------------------------------------------
-server.port=<PUERTO>                              # Ej: 8081
+spring.jackson.time-zone=${APP_TIMEZONE:America/Mexico_City}
+server.port=${PORT:8080}
 
 # ----------------------------------------------------------------------
 # PostgreSQL
 # ----------------------------------------------------------------------
-spring.datasource.url=jdbc:postgresql://<HOST>:<PUERTO>/<BASE_DATOS>
-spring.datasource.username=<USUARIO>
-spring.datasource.password=<CONTRASENA>
+spring.datasource.url=${DB_URL}
+spring.datasource.username=${DB_USERNAME}
+spring.datasource.password=${DB_PASSWORD}
 spring.datasource.driver-class-name=org.postgresql.Driver
 
 # ----------------------------------------------------------------------
-# JPA / Hibernate
+# Seguridad Criptografica y JWT (Variables de Entorno / Secret Manager)
+# ----------------------------------------------------------------------
+app.crypto.iv=${APP_CRYPTO_IV}
+app.crypto.key=${APP_CRYPTO_KEY}
+jwt.secret=${JWT_SECRET}
+jwt.expiration=${JWT_EXPIRATION_MS:86400000}
+
+# ----------------------------------------------------------------------
+# JPA / Hibernate & Flyway
 # ----------------------------------------------------------------------
 spring.jpa.open-in-view=false
-spring.jpa.hibernate.ddl-auto=none               # none | update | validate
+spring.jpa.hibernate.ddl-auto=none
 spring.jpa.show-sql=false
 spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
-spring.jpa.properties.jakarta.persistence.query.timeout=600000
-
-# ----------------------------------------------------------------------
-# HikariCP (pool de conexiones)
-# ----------------------------------------------------------------------
-spring.datasource.hikari.maximum-pool-size=10
-spring.datasource.hikari.minimum-idle=2
-spring.datasource.hikari.max-lifetime=18800
-spring.datasource.hikari.connection-timeout=5000
-spring.datasource.hikari.validation-timeout=5000
-spring.datasource.hikari.connection-test-query=SELECT 1
-
-# ----------------------------------------------------------------------
-# Flyway (migraciones de Base de Datos)
-# ----------------------------------------------------------------------
 spring.flyway.locations=classpath:db/migration
 spring.flyway.table=flyway_schema_history
 spring.flyway.schemas=public
@@ -52,44 +37,38 @@ spring.flyway.baseline-on-migrate=true
 spring.flyway.baseline-version=0
 
 # ----------------------------------------------------------------------
-# GestoPago - Autenticación
+# GestoPago - Autenticacion Bearer y Operacion SendTx
 # ----------------------------------------------------------------------
-gestopago.auth.url=https://gestopago.portalventas.net
-gestopago.auth.id-distribuidor=<ID_DISTRIBUIDOR>
-gestopago.auth.codigo-dispositivo=<CODIGO_DISPOSITIVO>
-gestopago.auth.password=<CONTRASENA>
-gestopago.auth.refresh-rate-ms=3600000          # Cada cuántos ms se renueva el token
+gestopago.auth.url=${GESTOPAGO_URL:https://gestopago.portalventas.net}
+# Si el gestor de secretos provee directamente el token Bearer:
+gestopago.auth.bearer-token=${GESTOPAGO_BEARER_TOKEN:}
+# O credenciales para obtencion/renovacion automatica cifrada en reposo:
+gestopago.auth.id-distribuidor=${GESTOPAGO_ID_DISTRIBUIDOR}
+gestopago.auth.codigo-dispositivo=${GESTOPAGO_CODIGO_DISPOSITIVO}
+gestopago.auth.password=${GESTOPAGO_PASSWORD}
+gestopago.auth.refresh-rate-ms=${GESTOPAGO_REFRESH_RATE_MS:3600000}
 
-# ----------------------------------------------------------------------
-# Feign - Timeouts de conexión/lectura
-# ----------------------------------------------------------------------
+gestopago.tx.unidad=${GESTOPAGO_UNIDAD:${gestopago.auth.codigo-dispositivo}}
+gestopago.tx.monto-minimo=${GESTOPAGO_TX_MONTO_MINIMO:1.00}
+gestopago.tx.monto-maximo=${GESTOPAGO_TX_MONTO_MAXIMO:50000.00}
+gestopago.tx.duplicate-window-seconds=${GESTOPAGO_TX_DUPLICATE_WINDOW_SECONDS:60}
+gestopago.tx.conciliacion-inmediata=${GESTOPAGO_TX_CONCILIACION_INMEDIATA:true}
+gestopago.tx.conciliacion.cron=${GESTOPAGO_CONCILIACION_CRON:0 */5 * * * *}
+gestopago.tx.conciliacion.max-intentos=${GESTOPAGO_CONCILIACION_MAX_INTENTOS:5}
+gestopago.verify.path=${GESTOPAGO_VERIFY_PATH:/sistema/service/verifyTx.do}
+
+# Timeouts Feign
 spring.cloud.openfeign.client.config.default.connect-timeout=5000
 spring.cloud.openfeign.client.config.default.read-timeout=30000
+gestopago.sendtx.connect-timeout-ms=${GESTOPAGO_SENDTX_CONNECT_TIMEOUT_MS:5000}
+gestopago.sendtx.read-timeout-ms=${GESTOPAGO_SENDTX_READ_TIMEOUT_MS:15000}
 
-# ----------------------------------------------------------------------
-# GestoPago - Catálogo de productos (carga programada)
-# ----------------------------------------------------------------------
-gestopago.catalogo.cron=0 0 6 * * *             # Cron diario 06:00
-gestopago.catalogo.startup-delay-ms=3000        # Espera antes de la carga inicial al arrancar
+# Catalogo GestoPago & MongoDB
+gestopago.catalogo.cron=${GESTOPAGO_CATALOGO_CRON:0 0 6 * * *}
+gestopago.catalogo.startup-delay-ms=${GESTOPAGO_CATALOGO_STARTUP_DELAY_MS:3000}
+spring.data.mongodb.uri=${MONGODB_URI}
 
-# ----------------------------------------------------------------------
-# MongoDB (catálogo)
-# ----------------------------------------------------------------------
-spring.data.mongodb.uri=mongodb://<USUARIO>:<CONTRASENA>@<HOST>:<PUERTO>/<BASE_DATOS>?authSource=admin
-
-# ----------------------------------------------------------------------
-# Swagger / OpenAPI / Springdoc
-# ----------------------------------------------------------------------
-springdoc.swagger-ui.path=/swagger-ui.html
-springdoc.api-docs.path=/v3/api-docs
-
-# ----------------------------------------------------------------------
-# Actuator (monitoreo)
-# ----------------------------------------------------------------------
+# Actuator & Logging (sin exponer detalles sensibles)
 management.endpoints.web.exposure.include=health,info
-management.endpoint.health.show-details=always
-
-# ----------------------------------------------------------------------
-# Logging
-# ----------------------------------------------------------------------
+management.endpoint.health.show-details=when_authorized
 logging.level.com.proyecto.servicios=INFO

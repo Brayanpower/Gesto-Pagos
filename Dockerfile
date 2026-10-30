@@ -1,5 +1,5 @@
-# ---- Etapa 1: build (Alpine + JDK 21) ----
-FROM gradle:8.10.2-jdk21-alpine AS build
+# ---- Etapa 1: build (Alpine + JDK 21 en arquitectura nativa del host para evitar emulacion lenta) ----
+FROM --platform=${BUILDPLATFORM:-linux/amd64} gradle:8.10.2-jdk21-alpine AS build
 WORKDIR /app
 COPY . .
 RUN gradle clean bootJar --no-build-cache --no-daemon
