@@ -1,0 +1,4 @@
+ALTER TABLE PersonasFisicas
+    ADD COLUMN IF NOT EXISTS ocupacion TEXT,
+    ADD COLUMN IF NOT EXISTS empresa TEXT,
+    ADD COLUMN IF NOT EXISTS ingresoMensual NUMERIC(10, 2);
