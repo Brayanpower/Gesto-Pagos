@@ -116,10 +116,7 @@ class PagoServicioServiceImplTest {
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
 
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                eq(10L), eq("1234567890"), anyString(), any(), eq(2284), eq(14302),
-                eq(new BigDecimal("100.00")), eq("5512345678"), eq(null)))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult aprobado = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.APROBADA)
@@ -167,8 +164,7 @@ class PagoServicioServiceImplTest {
                 .build();
 
         assertThrows(ReglaNegocioException.class, () -> servicio.procesarPagoServicio(req, null));
-        verify(persistenceService, never()).reservarYDebitarSaldo(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(persistenceService, never()).reservarYDebitarSaldo(any());
         verify(gestoPagoSendTxService, never()).ejecutarTransaccion(any());
     }
 
@@ -178,9 +174,7 @@ class PagoServicioServiceImplTest {
         when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                anyLong(), anyString(), anyString(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult rechazado = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.RECHAZADA_PROVEEDOR)
@@ -208,9 +202,7 @@ class PagoServicioServiceImplTest {
         when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                anyLong(), anyString(), anyString(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult timeoutResult = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.PENDIENTE_PROVEEDOR)
@@ -266,8 +258,7 @@ class PagoServicioServiceImplTest {
 
         assertTrue(resp.getRespuestaIdempotente());
         assertEquals("TX-111", resp.getFolioProveedor());
-        verify(persistenceService, never()).reservarYDebitarSaldo(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(persistenceService, never()).reservarYDebitarSaldo(any());
         verify(gestoPagoSendTxService, never()).ejecutarTransaccion(any());
     }
 
@@ -328,15 +319,13 @@ class PagoServicioServiceImplTest {
         when(transaccionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(tx)));
 
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "fechaCreacion"));
         PageResponse<HistorialCompraResponse> page = servicio.obtenerHistorialCompras(
                 LocalDate.of(2026, 10, 1),
                 LocalDate.of(2026, 10, 31),
                 null,
                 EstatusTransaccion.EXITOSA,
-                0,
-                10,
-                "fechaCreacion",
-                "DESC"
+                pageable
         );
 
         assertNotNull(page);
@@ -349,10 +338,11 @@ class PagoServicioServiceImplTest {
     void obtenerHistorialCompras_validacionesFechasYTitularidad() {
         when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
 
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "fechaCreacion"));
         assertThrows(ReglaNegocioException.class, () -> servicio.obtenerHistorialCompras(
                 LocalDate.of(2026, 10, 30),
                 LocalDate.of(2026, 10, 1),
-                null, null, 0, 10, "fechaCreacion", "DESC"
+                null, null, pageable
         ));
 
         Cliente otro = new Cliente();
@@ -364,7 +354,7 @@ class PagoServicioServiceImplTest {
         when(cuentaRepository.findWithClienteByNumeroCuenta("9999999999")).thenReturn(Optional.of(cuentaAjena));
 
         assertThrows(AccessDeniedException.class, () -> servicio.obtenerHistorialCompras(
-                null, null, "9999999999", null, 0, 10, "fechaCreacion", "DESC"
+                null, null, "9999999999", null, pageable
         ));
     }
 

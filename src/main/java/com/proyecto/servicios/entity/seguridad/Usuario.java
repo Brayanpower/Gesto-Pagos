@@ -12,6 +12,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "usuarios")
@@ -55,7 +56,7 @@ public class Usuario {
 
     @PrePersist
     public void prePersist() {
-        this.fechaCreacion = LocalDateTime.now();
+        this.fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
         if (this.rol == null) {
             this.rol = "ROLE_CLIENTE";
         }
@@ -64,6 +65,6 @@ public class Usuario {
 
     @PreUpdate
     public void preUpdate() {
-        this.fechaActualizacion = LocalDateTime.now();
+        this.fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }

@@ -4,7 +4,7 @@ import java.util.regex.Pattern;
 
 public final class LogSanitizer {
 
-    private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)(Bearer\\s+)[A-Za-z0-9\\-._~+/]+=*");
+    private static final Pattern BEARER_PATTERN = Pattern.compile("(?i)(Bearer\\s+)[A-Z\\d\\-._~+/]+=*");
     private static final Pattern SECRET_PARAM_PATTERN = Pattern.compile("(?i)(password|token|secret|key|iv|signed)=([^&\\s\"',;]+)");
     private static final Pattern AUTH_HEADER_PATTERN = Pattern.compile("(?i)(Authorization\\s*[:=]\\s*)([^\\r\\n,]+)");
 

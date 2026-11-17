@@ -42,7 +42,7 @@ public class CatalogoGeneroServiceImpl implements CatalogoGeneroService {
     @Transactional(readOnly = true)
     public List<CatalogoGeneroResponse> buscarPorTipo(String tipo) {
         if (tipo == null || tipo.isBlank()) {
-            return obtenerCatalogo();
+            return catalogoGeneroMapper.toResponses(catalogoGenerosRepository.findAll());
         }
         return catalogoGeneroMapper.toResponses(
                 catalogoGenerosRepository.findByTipoContainingIgnoreCaseOrderByTipoAsc(tipo.trim()));

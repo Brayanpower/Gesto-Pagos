@@ -11,15 +11,12 @@ import org.springframework.stereotype.Component;
 public class EncryptionHelperImpl implements EncryptionHelper {
 
     private final ObjectMapper objectMapper;
-    private final String iv;
     private final String key;
 
     public EncryptionHelperImpl(
             ObjectMapper objectMapper,
-            @Value("${app.crypto.iv}") String iv,
             @Value("${app.crypto.key}") String key) {
         this.objectMapper = objectMapper;
-        this.iv = iv;
         this.key = key;
     }
 
@@ -28,8 +25,8 @@ public class EncryptionHelperImpl implements EncryptionHelper {
         if (data == null) {
             return null;
         }
-        String plain = data instanceof String ? (String) data : toJson(data);
-        String result = AesEncryptionImpl.AESCipher("ENCRYPT", plain, iv, key);
+        String plain = data instanceof String text ? text : toJson(data);
+        String result = AesEncryptionImpl.aesCipher("ENCRYPT", plain, key);
         if (result == null) {
             throw new IllegalStateException("No fue posible cifrar la informacion");
         }
@@ -41,7 +38,7 @@ public class EncryptionHelperImpl implements EncryptionHelper {
         if (encrypted == null) {
             return null;
         }
-        String result = AesEncryptionImpl.AESCipher("DECRYPT", encrypted, iv, key);
+        String result = AesEncryptionImpl.aesCipher("DECRYPT", encrypted, key);
         if (result == null) {
             throw new IllegalStateException("No fue posible descifrar la informacion");
         }

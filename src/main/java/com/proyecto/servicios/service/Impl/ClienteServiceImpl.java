@@ -32,12 +32,15 @@ import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.Period;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
 @Service
 @Slf4j
 public class ClienteServiceImpl implements ClienteService {
+
+    private static final String CLIENTE_NO_ENCONTRADO = "Cliente activo no encontrado con ID: ";
 
     private final ClienteRepository clienteRepository;
     private final DomicilioClienteRepository domicilioClienteRepository;
@@ -190,8 +193,7 @@ public class ClienteServiceImpl implements ClienteService {
     @Override
     @Transactional(readOnly = true)
     public ClienteResponse obtenerPorId(Long id) {
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        Cliente cliente = buscarClienteActivo(id);
         ClienteResponse response = clienteMapper.toResponse(cliente);
         response.setCodigo(0);
         response.setMensaje("Consulta exitosa");
@@ -212,24 +214,12 @@ public class ClienteServiceImpl implements ClienteService {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.isTrue(root.get("activo")));
 
-            if (nombre != null && !nombre.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("nombre")), "%" + nombre.trim().toLowerCase() + "%"));
-            }
-            if (apellidoPaterno != null && !apellidoPaterno.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("apellidoPaterno")), "%" + apellidoPaterno.trim().toLowerCase() + "%"));
-            }
-            if (apellidoMaterno != null && !apellidoMaterno.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("apellidoMaterno")), "%" + apellidoMaterno.trim().toLowerCase() + "%"));
-            }
-            if (curp != null && !curp.isBlank()) {
-                predicates.add(cb.equal(cb.upper(root.get("curp")), curp.trim().toUpperCase()));
-            }
-            if (rfc != null && !rfc.isBlank()) {
-                predicates.add(cb.equal(cb.upper(root.get("rfc")), rfc.trim().toUpperCase()));
-            }
-            if (correo != null && !correo.isBlank()) {
-                predicates.add(cb.equal(cb.lower(root.get("correo")), correo.trim().toLowerCase()));
-            }
+            agregarFiltroLike(predicates, cb, root.get("nombre"), nombre);
+            agregarFiltroLike(predicates, cb, root.get("apellidoPaterno"), apellidoPaterno);
+            agregarFiltroLike(predicates, cb, root.get("apellidoMaterno"), apellidoMaterno);
+            agregarFiltroEqual(predicates, cb, root.get("curp"), curp, true);
+            agregarFiltroEqual(predicates, cb, root.get("rfc"), rfc, true);
+            agregarFiltroEqual(predicates, cb, root.get("correo"), correo, false);
 
             return cb.and(predicates.toArray(new Predicate[0]));
         };
@@ -238,32 +228,60 @@ public class ClienteServiceImpl implements ClienteService {
         return clienteMapper.toResponses(clientes);
     }
 
+    private void agregarFiltroLike(List<Predicate> predicates, jakarta.persistence.criteria.CriteriaBuilder cb,
+                                  jakarta.persistence.criteria.Expression<String> expr, String valor) {
+        if (valor != null && !valor.isBlank()) {
+            predicates.add(cb.like(cb.lower(expr), "%" + valor.trim().toLowerCase() + "%"));
+        }
+    }
+
+    private void agregarFiltroEqual(List<Predicate> predicates, jakarta.persistence.criteria.CriteriaBuilder cb,
+                                   jakarta.persistence.criteria.Expression<String> expr, String valor, boolean toUpper) {
+        if (valor != null && !valor.isBlank()) {
+            String normalizado = toUpper ? valor.trim().toUpperCase() : valor.trim().toLowerCase();
+            predicates.add(cb.equal(toUpper ? cb.upper(expr) : cb.lower(expr), normalizado));
+        }
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ClienteResponse actualizar(Long id, ClienteUpdateRequest request) {
         log.info("Actualizando informacion permitida para el cliente con ID: {}", id);
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        Cliente cliente = buscarClienteActivo(id);
 
-        // Actualizacion parcial: solo se validan/actualizan los campos enviados (no nulos)
         if (request.getFechaNacimiento() != null) {
             validarMayoriaDeEdad(request.getFechaNacimiento());
         }
 
-        // Validar unicidad de correo si cambia
-        if (request.getCorreo() != null) {
-            String nuevoCorreo = request.getCorreo().trim().toLowerCase();
-            if (!cliente.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
-                if (clienteRepository.existsByCorreo(nuevoCorreo) || usuarioRepository.existsByCorreo(nuevoCorreo)) {
-                    throw new DuplicateResourceException("El correo electronico ya pertenece a otro cliente/usuario: " + nuevoCorreo);
-                }
-                cliente.setCorreo(nuevoCorreo);
-                if (cliente.getUsuario() != null) {
-                    cliente.getUsuario().setCorreo(nuevoCorreo);
-                }
+        actualizarCorreoSiAplica(cliente, request.getCorreo());
+        actualizarCatalogosRelacionados(cliente, request);
+        clienteMapper.updateEntity(request, cliente);
+        actualizarDomicilioCliente(cliente, request.getDomicilio());
+
+        Cliente guardado = clienteRepository.save(cliente);
+        ClienteResponse response = clienteMapper.toResponse(guardado);
+        response.setCodigo(0);
+        response.setMensaje("Cliente actualizado exitosamente");
+        return response;
+    }
+
+    private void actualizarCorreoSiAplica(Cliente cliente, String nuevoCorreoRaw) {
+        if (nuevoCorreoRaw == null) {
+            return;
+        }
+        String nuevoCorreo = nuevoCorreoRaw.trim().toLowerCase();
+        if (!cliente.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
+            if (clienteRepository.existsByCorreo(nuevoCorreo) || usuarioRepository.existsByCorreo(nuevoCorreo)) {
+                throw new DuplicateResourceException("El correo electronico ya pertenece a otro cliente/usuario: " + nuevoCorreo);
+            }
+            cliente.setCorreo(nuevoCorreo);
+            if (cliente.getUsuario() != null) {
+                cliente.getUsuario().setCorreo(nuevoCorreo);
             }
         }
+    }
 
+    private void actualizarCatalogosRelacionados(Cliente cliente, ClienteUpdateRequest request) {
         if (request.getGeneroId() != null) {
             CatalogoGeneros genero = generosRepository.findById(request.getGeneroId())
                     .orElseThrow(() -> new CatalogoNotFoundException("Genero no encontrado con id: " + request.getGeneroId()));
@@ -279,41 +297,33 @@ public class ClienteServiceImpl implements ClienteService {
                     .orElseThrow(() -> new CatalogoNotFoundException("Estado civil no encontrado con id: " + request.getEstadoCivilId()));
             cliente.setEstadoCivil(estadoCivil);
         }
+    }
 
-        clienteMapper.updateEntity(request, cliente);
-
-        // Actualizar domicilio si se envio
-        if (request.getDomicilio() != null && cliente.getDomicilio() != null) {
-            DomicilioDTO domDto = request.getDomicilio();
-            CatalogoColonia colonia = coloniaRepository.findById(domDto.getColoniaId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Colonia no encontrada con id: " + domDto.getColoniaId()));
-            CatalogoMunicipio municipio = municipioRepository.findById(domDto.getMunicipioId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Municipio no encontrado con id: " + domDto.getMunicipioId()));
-            CatalogoEstado estado = estadoRepository.findById(domDto.getEstadoId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
-            CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
-
-            domicilioClienteMapper.updateEntity(domDto, cliente.getDomicilio());
-            cliente.getDomicilio().setColonia(colonia);
-            cliente.getDomicilio().setMunicipio(municipio);
-            cliente.getDomicilio().setEstado(estado);
-            cliente.getDomicilio().setPais(pais);
+    private void actualizarDomicilioCliente(Cliente cliente, DomicilioDTO domDto) {
+        if (domDto == null || cliente.getDomicilio() == null) {
+            return;
         }
+        CatalogoColonia colonia = coloniaRepository.findById(domDto.getColoniaId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Colonia no encontrada con id: " + domDto.getColoniaId()));
+        CatalogoMunicipio municipio = municipioRepository.findById(domDto.getMunicipioId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Municipio no encontrado con id: " + domDto.getMunicipioId()));
+        CatalogoEstado estado = estadoRepository.findById(domDto.getEstadoId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
+        CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
 
-        Cliente guardado = clienteRepository.save(cliente);
-        ClienteResponse response = clienteMapper.toResponse(guardado);
-        response.setCodigo(0);
-        response.setMensaje("Cliente actualizado exitosamente");
-        return response;
+        domicilioClienteMapper.updateEntity(domDto, cliente.getDomicilio());
+        cliente.getDomicilio().setColonia(colonia);
+        cliente.getDomicilio().setMunicipio(municipio);
+        cliente.getDomicilio().setEstado(estado);
+        cliente.getDomicilio().setPais(pais);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void darDeBaja(Long id) {
         log.info("Iniciando baja logica para el cliente con ID: {}", id);
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        Cliente cliente = buscarClienteActivo(id);
 
         // 1. Desactivar cliente
         cliente.setActivo(false);
@@ -340,11 +350,16 @@ public class ClienteServiceImpl implements ClienteService {
         log.info("Baja logica del cliente ID {} completada exitosamente", id);
     }
 
+    private Cliente buscarClienteActivo(Long id) {
+        return clienteRepository.findByIdAndActivoTrue(id)
+                .orElseThrow(() -> new ResourceNotFoundException(CLIENTE_NO_ENCONTRADO + id));
+    }
+
     private void validarMayoriaDeEdad(LocalDate fechaNacimiento) {
         if (fechaNacimiento == null) {
             throw new IllegalArgumentException("La fecha de nacimiento es obligatoria");
         }
-        LocalDate hoy = LocalDate.now();
+        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
         if (fechaNacimiento.isAfter(hoy)) {
             throw new IllegalArgumentException("La fecha de nacimiento no puede ser futura");
         }

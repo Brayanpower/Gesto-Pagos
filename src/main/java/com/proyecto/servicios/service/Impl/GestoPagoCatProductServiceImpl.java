@@ -19,6 +19,7 @@ import org.springframework.stereotype.Service;
 
 import java.io.StringReader;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 
 @Service
 @Slf4j
@@ -34,7 +35,7 @@ public class GestoPagoCatProductServiceImpl implements GestoPagoCatProductServic
     @Value("${gestopago.catalogo.startup-delay-ms:3000}")
     private long inicioEsperaMs;
 
-    private volatile GestoPagoCatProductResponse catalogoCache;
+    private final AtomicReference<GestoPagoCatProductResponse> catalogoCache = new AtomicReference<>();
 
     public GestoPagoCatProductServiceImpl(GestoPagoCatProduct gestoPagoCatProduct,
                                           CatalogoService catalogoService) {
@@ -90,7 +91,7 @@ public class GestoPagoCatProductServiceImpl implements GestoPagoCatProductServic
         log.info("Ejecutando carga programada del catalogo GestoPago (06:00 hrs)");
         try {
             GestoPagoCatProductResponse response = obtenerCatalogoProductos();
-            this.catalogoCache = response;
+            this.catalogoCache.set(response);
             catalogoService.reemplazarCatalogo(response);
             log.info("Catalogo GestoPago cargado y persistido en MongoDB ({} productos)",
                     response.getProductos().getProductos().size());
@@ -101,7 +102,7 @@ public class GestoPagoCatProductServiceImpl implements GestoPagoCatProductServic
 
     @Override
     public GestoPagoCatProductResponse obtenerCatalogoCache() {
-        GestoPagoCatProductResponse cache = this.catalogoCache;
+        GestoPagoCatProductResponse cache = this.catalogoCache.get();
         if (cache == null) {
             throw new GestoPagoCatProductException(
                     "El catalogo de GestoPago aun no ha sido cargado por el proceso programado de las 06:00 hrs");

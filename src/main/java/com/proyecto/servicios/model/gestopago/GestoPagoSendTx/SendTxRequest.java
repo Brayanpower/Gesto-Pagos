@@ -26,7 +26,7 @@ public class SendTxRequest {
 
     @NotBlank(message = "El numero de cuenta es obligatorio")
     @Size(min = 10, max = 20, message = "El numero de cuenta debe tener entre 10 y 20 digitos")
-    @Pattern(regexp = "^[0-9]{10,20}$", message = "El numero de cuenta solo debe contener digitos")
+    @Pattern(regexp = "^\\d{10,20}$", message = "El numero de cuenta solo debe contener digitos")
     @Schema(description = "Numero de cuenta activa del cliente desde la cual se descontara el monto", example = "1234567890")
     private String numeroCuenta;
 
@@ -46,17 +46,17 @@ public class SendTxRequest {
     @Schema(description = "Monto de la operacion en MXN", example = "100.00")
     private BigDecimal montoPago;
 
-    @Pattern(regexp = "^[0-9]{10,15}$", message = "El telefono debe contener entre 10 y 15 digitos numericos")
+    @Pattern(regexp = "^\\d{10,15}$", message = "El telefono debe contener entre 10 y 15 digitos numericos")
     @Schema(description = "Numero telefonico destino (obligatorio en recargas de tiempo aire)", example = "5512345678")
     private String telefono;
 
     @Size(max = 100, message = "La referencia debe tener maximo 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9\\-]*$", message = "La referencia solo debe contener letras, numeros y guiones")
+    @Pattern(regexp = "^[a-zA-Z\\d\\-]*$", message = "La referencia solo debe contener letras, numeros y guiones")
     @Schema(description = "Referencia del recibo o contrato (obligatoria en pagos de servicios)", example = "987654321012")
     private String referencia;
 
     @Size(min = 8, max = 100, message = "La clave de idempotencia debe tener entre 8 y 100 caracteres")
-    @Pattern(regexp = "^[a-zA-Z0-9_\\-]*$", message = "La clave de idempotencia solo permite letras, numeros, guiones y guion bajo")
+    @Pattern(regexp = "^[a-zA-Z\\d_\\-]*$", message = "La clave de idempotencia solo permite letras, numeros, guiones y guion bajo")
     @Schema(description = "Clave unica opcional para prevenir cargos duplicados (tambien aceptada via header Idempotency-Key)", example = "recarga-20261030-0001")
     private String claveIdempotencia;
 }

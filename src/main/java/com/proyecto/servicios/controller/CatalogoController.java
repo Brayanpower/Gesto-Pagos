@@ -21,7 +21,7 @@ public class CatalogoController {
     }
 
     @GetMapping(value = "/gestopago/catalogo", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> obtenerCatalogo() {
+    public ResponseEntity<Object> obtenerCatalogo() {
         List<CatalogoProducto> catalogo = catalogoService.obtenerCatalogo();
         if (catalogo.isEmpty()) {
             GenericResponse respuesta = new GenericResponse();

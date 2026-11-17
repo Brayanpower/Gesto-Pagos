@@ -17,6 +17,7 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult.EstadoProveedor;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.HistorialCompraResponse;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.PagoServicioResponse;
+import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.ReservaSaldoCommand;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
@@ -59,12 +60,14 @@ import java.util.regex.Pattern;
 @Slf4j
 public class PagoServicioServiceImpl implements PagoServicioService {
 
+    private static final String CAMPO_FECHA_CREACION = "fechaCreacion";
     private static final int MAX_PAGE_SIZE = 100;
     private static final Set<String> CAMPOS_ORDENAMIENTO_PERMITIDOS = Set.of(
-            "fechaCreacion", "monto", "estatus", "idServicio", "idProducto"
+            CAMPO_FECHA_CREACION, "monto", "estatus", "idServicio", "idProducto"
     );
     private static final Pattern IDEMPOTENCY_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]{8,100}$");
-    private static final Pattern TELEFONO_10_DIGITOS = Pattern.compile("^[0-9]{10}$");
+    private static final Pattern TELEFONO_10_DIGITOS = Pattern.compile("^\\d{10}$");
+    private static final Pattern PATTERN_UPC = Pattern.compile("^\\d{3,15}$");
 
     private final CatalogoService catalogoService;
     private final TransaccionPersistenceService persistenceService;
@@ -130,7 +133,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         String referenciaEfectiva = validarYResolverReferencia(request.getReferencia(), productoCatalogo);
 
         // Fase 1: Reserva / debito preventivo con bloqueo pesimista de cuenta
-        TransaccionServicio tx = persistenceService.reservarYDebitarSaldo(
+        TransaccionServicio tx = persistenceService.reservarYDebitarSaldo(new ReservaSaldoCommand(
                 cliente.getId(),
                 numeroCuenta,
                 claveIdempotencia,
@@ -140,7 +143,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
                 request.getMontoPago(),
                 telefonoEfectivo,
                 referenciaEfectiva
-        );
+        ));
 
         // Fase 2: Envio hacia GestoPago sendTx.do (fuera de transaccion de BD)
         SendTx payloadProveedor = construirPayloadProveedor(tx);
@@ -159,13 +162,13 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         }
 
         // Fase 3: Tratamiento del resultado y conciliacion ante estados indeterminados
-        return resolverResultadoOperacion(tx, payloadProveedor, resultadoProveedor);
+        return resolverResultadoOperacion(tx, resultadoProveedor);
     }
 
     @Override
     @Transactional(readOnly = true)
     public PagoServicioResponse consultarTransaccionPorUpc(String upc) {
-        if (upc == null || !upc.matches("^[0-9]{3,15}$")) {
+        if (upc == null || !PATTERN_UPC.matcher(upc.trim()).matches()) {
             throw new ReglaNegocioException("El folio UPC proporcionado no tiene un formato valido.");
         }
         Usuario usuario = obtenerUsuarioAutenticadoActivo();
@@ -178,7 +181,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
 
     @Override
     public PagoServicioResponse conciliarTransaccion(String upc) {
-        if (upc == null || !upc.matches("^[0-9]{3,15}$")) {
+        if (upc == null || !PATTERN_UPC.matcher(upc.trim()).matches()) {
             throw new ReglaNegocioException("El folio UPC proporcionado no tiene un formato valido.");
         }
         Usuario usuario = obtenerUsuarioAutenticadoActivo();
@@ -222,74 +225,94 @@ public class PagoServicioServiceImpl implements PagoServicioService {
             LocalDate fechaFin,
             String numeroCuenta,
             EstatusTransaccion estatus,
-            int page,
-            int size,
-            String sortBy,
-            String sortDir) {
+            Pageable pageable) {
 
         Usuario usuario = obtenerUsuarioAutenticadoActivo();
         Cliente cliente = validarYObtenerClienteActivo(usuario);
 
-        if (page < 0) {
-            throw new ReglaNegocioException("El numero de pagina no puede ser negativo.");
-        }
-        if (size < 1 || size > MAX_PAGE_SIZE) {
-            throw new ReglaNegocioException("El tamano de pagina debe estar entre 1 y " + MAX_PAGE_SIZE + ".");
-        }
-        if (fechaInicio != null && fechaFin != null && fechaInicio.isAfter(fechaFin)) {
-            throw new ReglaNegocioException("La fecha de inicio no puede ser posterior a la fecha de fin.");
-        }
+        validarRangoFechasHistorial(fechaInicio, fechaFin);
+        String cuentaFiltrada = validarTitularidadCuentaHistorial(numeroCuenta, cliente);
+        Pageable pageableAjustado = normalizarPaginacion(pageable);
 
-        String cuentaFiltrada = null;
-        if (numeroCuenta != null && !numeroCuenta.isBlank()) {
-            cuentaFiltrada = numeroCuenta.trim();
-            Cuenta cuenta = cuentaRepository.findWithClienteByNumeroCuenta(cuentaFiltrada)
-                    .orElseThrow(() -> new ResourceNotFoundException("La cuenta bancaria indicada no existe."));
-            if (cuenta.getCliente() == null || !cuenta.getCliente().getId().equals(cliente.getId())) {
-                throw new AccessDeniedException("No tiene autorizacion para consultar el historial de esta cuenta.");
-            }
-        }
-
-        String campoOrden = (sortBy != null && CAMPOS_ORDENAMIENTO_PERMITIDOS.contains(sortBy.trim()))
-                ? sortBy.trim()
-                : "fechaCreacion";
-        Sort.Direction direccion = "ASC".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
-        Pageable pageable = PageRequest.of(page, size, Sort.by(direccion, campoOrden));
-
-        final Long clienteIdFinal = cliente.getId();
-        final String cuentaFinal = cuentaFiltrada;
-        final LocalDateTime desde = fechaInicio != null ? fechaInicio.atStartOfDay() : null;
-        final LocalDateTime hastaExclusivo = fechaFin != null ? fechaFin.plusDays(1).atStartOfDay() : null;
-
-        Specification<TransaccionServicio> spec = (root, query, cb) -> {
-            List<Predicate> predicates = new ArrayList<>();
-            predicates.add(cb.equal(root.get("cliente").get("id"), clienteIdFinal));
-
-            if (cuentaFinal != null) {
-                predicates.add(cb.equal(root.get("numeroCuenta"), cuentaFinal));
-            }
-            if (estatus != null) {
-                predicates.add(cb.equal(root.get("estatus"), estatus));
-            }
-            if (desde != null) {
-                predicates.add(cb.greaterThanOrEqualTo(root.get("fechaCreacion"), desde));
-            }
-            if (hastaExclusivo != null) {
-                predicates.add(cb.lessThan(root.get("fechaCreacion"), hastaExclusivo));
-            }
-            return cb.and(predicates.toArray(new Predicate[0]));
-        };
+        Specification<TransaccionServicio> spec = construirSpecificationHistorial(
+                cliente.getId(), cuentaFiltrada, estatus, fechaInicio, fechaFin);
 
         Page<HistorialCompraResponse> resultadoPaginado = transaccionRepository
-                .findAll(spec, pageable)
+                .findAll(spec, pageableAjustado)
                 .map(this::aHistorialCompraResponse);
 
         return PageResponse.from(resultadoPaginado);
     }
 
+    private void validarRangoFechasHistorial(LocalDate fechaInicio, LocalDate fechaFin) {
+        if (fechaInicio != null && fechaFin != null && fechaInicio.isAfter(fechaFin)) {
+            throw new ReglaNegocioException("La fecha de inicio no puede ser posterior a la fecha de fin.");
+        }
+    }
+
+    private String validarTitularidadCuentaHistorial(String numeroCuenta, Cliente cliente) {
+        if (numeroCuenta == null || numeroCuenta.isBlank()) {
+            return null;
+        }
+        String cuentaFiltrada = numeroCuenta.trim();
+        Cuenta cuenta = cuentaRepository.findWithClienteByNumeroCuenta(cuentaFiltrada)
+                .orElseThrow(() -> new ResourceNotFoundException("La cuenta bancaria indicada no existe."));
+        if (cuenta.getCliente() == null || !cuenta.getCliente().getId().equals(cliente.getId())) {
+            throw new AccessDeniedException("No tiene autorizacion para consultar el historial de esta cuenta.");
+        }
+        return cuentaFiltrada;
+    }
+
+    private Pageable normalizarPaginacion(Pageable pageable) {
+        if (pageable == null) {
+            return PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, CAMPO_FECHA_CREACION));
+        }
+        int page = Math.max(0, pageable.getPageNumber());
+        int size = pageable.getPageSize();
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ReglaNegocioException("El tamano de pagina debe estar entre 1 y " + MAX_PAGE_SIZE + ".");
+        }
+        Sort sort = pageable.getSort();
+        if (sort.isUnsorted()) {
+            sort = Sort.by(Sort.Direction.DESC, CAMPO_FECHA_CREACION);
+        } else {
+            List<Sort.Order> ordenesValidas = sort.stream()
+                    .filter(order -> CAMPOS_ORDENAMIENTO_PERMITIDOS.contains(order.getProperty()))
+                    .toList();
+            sort = ordenesValidas.isEmpty()
+                    ? Sort.by(Sort.Direction.DESC, CAMPO_FECHA_CREACION)
+                    : Sort.by(ordenesValidas);
+        }
+        return PageRequest.of(page, size, sort);
+    }
+
+    private Specification<TransaccionServicio> construirSpecificationHistorial(
+            Long clienteId, String cuenta, EstatusTransaccion estatus, LocalDate fechaInicio, LocalDate fechaFin) {
+        LocalDateTime desde = fechaInicio != null ? fechaInicio.atStartOfDay() : null;
+        LocalDateTime hastaExclusivo = fechaFin != null ? fechaFin.plusDays(1).atStartOfDay() : null;
+
+        return (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            predicates.add(cb.equal(root.get("cliente").get("id"), clienteId));
+
+            if (cuenta != null) {
+                predicates.add(cb.equal(root.get("numeroCuenta"), cuenta));
+            }
+            if (estatus != null) {
+                predicates.add(cb.equal(root.get("estatus"), estatus));
+            }
+            if (desde != null) {
+                predicates.add(cb.greaterThanOrEqualTo(root.get(CAMPO_FECHA_CREACION), desde));
+            }
+            if (hastaExclusivo != null) {
+                predicates.add(cb.lessThan(root.get(CAMPO_FECHA_CREACION), hastaExclusivo));
+            }
+            return cb.and(predicates.toArray(new Predicate[0]));
+        };
+    }
+
     private PagoServicioResponse resolverResultadoOperacion(
             TransaccionServicio tx,
-            SendTx payloadProveedor,
             GestoPagoTxResult resultado) {
 
         if (resultado.getEstado() == EstadoProveedor.APROBADA) {

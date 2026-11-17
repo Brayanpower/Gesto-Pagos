@@ -13,6 +13,7 @@ import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "cuentas")
@@ -54,7 +55,7 @@ public class Cuenta {
 
     @PrePersist
     public void prePersist() {
-        this.fechaCreacion = LocalDateTime.now();
+        this.fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
         if (this.estatus == null) {
             this.estatus = EstatusCuenta.ACTIVA;
         }
@@ -65,6 +66,6 @@ public class Cuenta {
 
     @PreUpdate
     public void preUpdate() {
-        this.fechaActualizacion = LocalDateTime.now();
+        this.fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }

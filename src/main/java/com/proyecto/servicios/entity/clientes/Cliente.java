@@ -15,6 +15,7 @@ import lombok.Setter;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -60,12 +61,12 @@ public class Cliente {
     private LocalDate fechaNacimiento;
 
     @NotBlank(message = "La CURP es obligatoria")
-    @Pattern(regexp = "^[A-Z]{4}[0-9]{6}[HM][A-Z]{5}[0-9A-Z][0-9]$", message = "El formato de CURP no es valido (18 caracteres)")
+    @Pattern(regexp = "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[0-9A-Z]\\d$", message = "El formato de CURP no es valido (18 caracteres)")
     @Column(nullable = false, unique = true, length = 18)
     private String curp;
 
     @NotBlank(message = "El RFC es obligatorio")
-    @Pattern(regexp = "^[A-Z&Ñ]{3,4}[0-9]{6}[A-V1-9][A-Z0-9]{2}$", message = "El formato de RFC no es valido (12 o 13 caracteres)")
+    @Pattern(regexp = "^[A-Z&Ñ]{3,4}\\d{6}[A-V1-9][A-Z0-9]{2}$", message = "El formato de RFC no es valido (12 o 13 caracteres)")
     @Column(nullable = false, unique = true, length = 13)
     private String rfc;
 
@@ -92,11 +93,11 @@ public class Cliente {
     private String correo;
 
     @NotBlank(message = "El telefono movil es obligatorio")
-    @Pattern(regexp = "^[0-9]{10}$", message = "El telefono movil debe tener exactamente 10 digitos")
+    @Pattern(regexp = "^\\d{10}$", message = "El telefono movil debe tener exactamente 10 digitos")
     @Column(name = "telefono_movil", nullable = false, length = 10)
     private String telefonoMovil;
 
-    @Pattern(regexp = "^[0-9]{10}$", message = "El telefono alternativo debe tener exactamente 10 digitos")
+    @Pattern(regexp = "^\\d{10}$", message = "El telefono alternativo debe tener exactamente 10 digitos")
     @Column(name = "telefono_alternativo", length = 10)
     private String telefonoAlternativo;
 
@@ -138,12 +139,12 @@ public class Cliente {
 
     @PrePersist
     public void prePersist() {
-        this.fechaCreacion = LocalDateTime.now();
+        this.fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
         this.activo = true;
     }
 
     @PreUpdate
     public void preUpdate() {
-        this.fechaActualizacion = LocalDateTime.now();
+        this.fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }

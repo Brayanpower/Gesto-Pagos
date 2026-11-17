@@ -15,6 +15,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Optional;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -164,7 +165,7 @@ public class GestoPagoTokenServiceImpl implements GestoPagoTokenService {
         long duracionSegundos = (tokenEntity.getExpiresIn() != null && tokenEntity.getExpiresIn() > MARGEN_EXPIRACION_SEGUNDOS)
                 ? (tokenEntity.getExpiresIn() - MARGEN_EXPIRACION_SEGUNDOS)
                 : Math.max(60L, (refreshRateMs / 1000L));
-        return referencia.plusSeconds(duracionSegundos).isAfter(LocalDateTime.now());
+        return referencia.plusSeconds(duracionSegundos).isAfter(LocalDateTime.now(ZoneId.systemDefault()));
     }
 
     private String cifrarToken(String plainToken) {

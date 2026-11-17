@@ -31,6 +31,7 @@ import java.net.NoRouteToHostException;
 import java.net.UnknownHostException;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Set;
 
@@ -42,6 +43,12 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
     private static final DateTimeFormatter HORA_LOCAL = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final Set<String> CODIGOS_APROBADOS = Set.of("01", "00", "0");
     private static final Set<String> CODIGOS_EN_PROCESO = Set.of("02", "03", "70", "99");
+
+    private static final String FIELD_SIGNED = "signed";
+    private static final String FIELD_UPPER_CODIGO = "CODIGO";
+    private static final String FIELD_LOWER_CODIGO = "codigo";
+    private static final String FIELD_UPPER_MENSAJE = "MENSAJE";
+    private static final String FIELD_LOWER_MENSAJE = "mensaje";
 
     private final GestoPagoSendTx gestoPagoSendTx;
     private final EncryptionHelper encryptionHelper;
@@ -127,7 +134,7 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
 
     private MultiValueMap<String, String> prepararFormularioFirmado(SendTx request) {
         if (request.getHoraLocal() == null || request.getHoraLocal().isBlank()) {
-            request.setHoraLocal(LocalDateTime.now().format(HORA_LOCAL));
+            request.setHoraLocal(LocalDateTime.now(ZoneId.systemDefault()).format(HORA_LOCAL));
         }
         if (request.getUpc() == null || request.getUpc().isBlank()) {
             request.setUpc(generarUpc());
@@ -143,7 +150,7 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
 
         MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
         form.add("random", String.valueOf(System.currentTimeMillis()));
-        form.add("signed", signedPayload);
+        form.add(FIELD_SIGNED, signedPayload);
         return form;
     }
 
@@ -234,10 +241,10 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
             DocumentBuilder builder = factory.newDocumentBuilder();
             Document doc = builder.parse(new InputSource(new StringReader(xml)));
 
-            String codigo = extraerTagXml(doc, "CODIGO");
+            String codigo = extraerTagXml(doc, FIELD_UPPER_CODIGO);
             String texto = extraerTagXml(doc, "TEXTO");
             if (texto == null) {
-                texto = extraerTagXml(doc, "MENSAJE");
+                texto = extraerTagXml(doc, FIELD_UPPER_MENSAJE);
             }
             String idTx = extraerTagXml(doc, "ID_TX");
             if (idTx == null) {
@@ -260,23 +267,23 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
         try {
             JsonNode root = objectMapper.readTree(json);
 
-            if (root.hasNonNull("signed") && !root.has("MENSAJE") && !root.has("codigo") && !root.has("CODIGO")) {
-                String decrypted = encryptionHelper.decryptToString(root.get("signed").asText());
+            if (root.hasNonNull(FIELD_SIGNED) && !root.has(FIELD_UPPER_MENSAJE)
+                    && !root.has(FIELD_LOWER_CODIGO) && !root.has(FIELD_UPPER_CODIGO)) {
+                String decrypted = encryptionHelper.decryptToString(root.get(FIELD_SIGNED).asText());
                 if (decrypted != null && !decrypted.isBlank()) {
                     return interpretarRespuestaProveedor(decrypted.trim(), upc);
                 }
             }
 
-            JsonNode nodoMensaje = root.has("MENSAJE") ? root.get("MENSAJE")
-                    : (root.has("mensaje") && root.get("mensaje").isObject() ? root.get("mensaje") : root);
+            JsonNode nodoMensaje = resolverNodoMensaje(root);
 
-            String codigo = extraerCampoJson(nodoMensaje, "CODIGO", "codigo", "code");
+            String codigo = extraerCampoJson(nodoMensaje, FIELD_UPPER_CODIGO, FIELD_LOWER_CODIGO, "code");
             if (codigo == null) {
-                codigo = extraerCampoJson(root, "CODIGO", "codigo", "code");
+                codigo = extraerCampoJson(root, FIELD_UPPER_CODIGO, FIELD_LOWER_CODIGO, "code");
             }
-            String texto = extraerCampoJson(nodoMensaje, "TEXTO", "texto", "mensaje", "message");
-            if (texto == null && root.has("mensaje") && root.get("mensaje").isTextual()) {
-                texto = root.get("mensaje").asText();
+            String texto = extraerCampoJson(nodoMensaje, "TEXTO", "texto", FIELD_LOWER_MENSAJE, "message");
+            if (texto == null && root.has(FIELD_LOWER_MENSAJE) && root.get(FIELD_LOWER_MENSAJE).isTextual()) {
+                texto = root.get(FIELD_LOWER_MENSAJE).asText();
             }
             String idTx = extraerCampoJson(root, "ID_TX", "idTx", "transaccionId", "TRANSACCION_ID");
             String numAut = extraerCampoJson(root, "NUM_AUTORIZACION", "numAutorizacion", "autorizacion");
@@ -287,6 +294,16 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
             return resultadoIndeterminado("JSON_INVALIDO",
                     "Respuesta ilegible del proveedor; operacion enviada a conciliacion.");
         }
+    }
+
+    private JsonNode resolverNodoMensaje(JsonNode root) {
+        if (root.has(FIELD_UPPER_MENSAJE)) {
+            return root.get(FIELD_UPPER_MENSAJE);
+        }
+        if (root.has(FIELD_LOWER_MENSAJE) && root.get(FIELD_LOWER_MENSAJE).isObject()) {
+            return root.get(FIELD_LOWER_MENSAJE);
+        }
+        return root;
     }
 
     private GestoPagoTxResult construirResultadoPorCodigo(

@@ -10,6 +10,7 @@ import com.proyecto.servicios.exception.CuentaNoOperativaException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.SaldoInsuficienteException;
+import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.ReservaSaldoCommand;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -62,7 +63,7 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(cuenta));
         when(transaccionRepository.findByClaveIdempotencia("idem-0001")).thenReturn(Optional.empty());
         when(transaccionRepository.existeOperacionDuplicadaReciente(
-                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), anyList(), any(), any()))
+                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), any()))
                 .thenReturn(false);
         when(transaccionRepository.existsByUpc(anyString())).thenReturn(false);
         when(transaccionRepository.save(any(TransaccionServicio.class))).thenAnswer(inv -> {
@@ -75,10 +76,10 @@ class TransaccionPersistenceServiceTest {
         prod.setServicio("TELCEL");
         prod.setNombreProducto("Recarga 100");
 
-        TransaccionServicio tx = persistenceService.reservarYDebitarSaldo(
+        TransaccionServicio tx = persistenceService.reservarYDebitarSaldo(new ReservaSaldoCommand(
                 10L, "1234567890", "idem-0001", prod, 2284, 14302,
                 new BigDecimal("100.00"), "5512345678", null
-        );
+        ));
 
         assertEquals(new BigDecimal("400.00"), cuenta.getSaldo());
         assertEquals(new BigDecimal("500.00"), tx.getSaldoAnterior());
@@ -93,9 +94,8 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("0000000000")).thenReturn(Optional.empty());
 
         assertThrows(ResourceNotFoundException.class, () ->
-                persistenceService.reservarYDebitarSaldo(
-                        10L, "0000000000", "idem-0001", new CatalogoProducto(),
-                        2284, 14302, new BigDecimal("100.00"), "5512345678", null));
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "0000000000", "idem-0001", new BigDecimal("100.00"))));
     }
 
     @Test
@@ -105,9 +105,8 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(cuentaDeOtro));
 
         assertThrows(AccessDeniedException.class, () ->
-                persistenceService.reservarYDebitarSaldo(
-                        10L, "1234567890", "idem-0001", new CatalogoProducto(),
-                        2284, 14302, new BigDecimal("100.00"), "5512345678", null));
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "1234567890", "idem-0001", new BigDecimal("100.00"))));
         verify(cuentaRepository, never()).save(any());
     }
 
@@ -119,9 +118,8 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(bloqueada));
 
         assertThrows(CuentaNoOperativaException.class, () ->
-                persistenceService.reservarYDebitarSaldo(
-                        10L, "1234567890", "idem-0001", new CatalogoProducto(),
-                        2284, 14302, new BigDecimal("100.00"), "5512345678", null));
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "1234567890", "idem-0001", new BigDecimal("100.00"))));
     }
 
     @Test
@@ -131,13 +129,12 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(cuenta));
         when(transaccionRepository.findByClaveIdempotencia("idem-0001")).thenReturn(Optional.empty());
         when(transaccionRepository.existeOperacionDuplicadaReciente(
-                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), anyList(), any(), any()))
+                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), any()))
                 .thenReturn(false);
 
         assertThrows(SaldoInsuficienteException.class, () ->
-                persistenceService.reservarYDebitarSaldo(
-                        10L, "1234567890", "idem-0001", new CatalogoProducto(),
-                        2284, 14302, new BigDecimal("100.00"), "5512345678", null));
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "1234567890", "idem-0001", new BigDecimal("100.00"))));
 
         assertEquals(new BigDecimal("50.00"), cuenta.getSaldo());
         verify(cuentaRepository, never()).save(any());
@@ -150,14 +147,23 @@ class TransaccionPersistenceServiceTest {
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(cuenta));
         when(transaccionRepository.findByClaveIdempotencia("idem-0002")).thenReturn(Optional.empty());
         when(transaccionRepository.existeOperacionDuplicadaReciente(
-                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), anyList(), any(), any()))
+                anyLong(), anyInt(), anyInt(), any(), anyString(), anyString(), any()))
                 .thenReturn(true);
 
         assertThrows(DuplicateResourceException.class, () ->
-                persistenceService.reservarYDebitarSaldo(
-                        10L, "1234567890", "idem-0002", new CatalogoProducto(),
-                        2284, 14302, new BigDecimal("100.00"), "5512345678", null));
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "1234567890", "idem-0002", new BigDecimal("100.00"))));
         verify(cuentaRepository, never()).save(any());
+    }
+
+    private static ReservaSaldoCommand comandoPrueba(
+            Long clienteId, String cuenta, String idempotencia, BigDecimal monto) {
+        CatalogoProducto prod = new CatalogoProducto();
+        prod.setServicio("TELCEL");
+        prod.setNombreProducto("Recarga 100");
+        return new ReservaSaldoCommand(
+                clienteId, cuenta, idempotencia, prod, 2284, 14302, monto, "5512345678", null
+        );
     }
 
     @Test

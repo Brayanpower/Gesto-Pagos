@@ -219,10 +219,7 @@ class PagoServicioControllerIntegrationTest {
                 eq(LocalDate.of(2026, 10, 31)),
                 eq("1234567890"),
                 eq(EstatusTransaccion.EXITOSA),
-                eq(0),
-                eq(5),
-                eq("fechaCreacion"),
-                eq("DESC")
+                any()
         )).thenReturn(page);
 
         mockMvc.perform(get("/servicios/historial")

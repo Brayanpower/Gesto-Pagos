@@ -11,6 +11,9 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -96,8 +99,10 @@ public class PagoServicioController {
             @Parameter(description = "Dirección de ordenamiento (ASC o DESC)", example = "DESC")
             @RequestParam(value = "sortDir", defaultValue = "DESC") String sortDir) {
 
+        Sort.Direction direction = "ASC".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
         PageResponse<HistorialCompraResponse> historial = pagoServicioService.obtenerHistorialCompras(
-                fechaInicio, fechaFin, numeroCuenta, estatus, page, size, sortBy, sortDir);
+                fechaInicio, fechaFin, numeroCuenta, estatus, pageable);
         return new ResponseEntity<>(historial, HttpStatus.OK);
     }
 

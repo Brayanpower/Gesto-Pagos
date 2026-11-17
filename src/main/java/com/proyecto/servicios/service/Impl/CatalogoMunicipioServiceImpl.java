@@ -19,6 +19,8 @@ import java.util.List;
 @Slf4j
 public class CatalogoMunicipioServiceImpl implements CatalogoMunicipioService {
 
+    private static final String NO_EXISTE = " no existe";
+
     private final CatalogoMunicipioRepository repository;
     private final CatalogoEstadoRepository estadoRepository;
     private final CatalogoMunicipioMapper mapper;
@@ -47,7 +49,7 @@ public class CatalogoMunicipioServiceImpl implements CatalogoMunicipioService {
     @Transactional(readOnly = true)
     public List<CatalogoMunicipioResponse> buscarPorEstado(Long estadoId) {
         if (estadoId == null) {
-            return obtenerCatalogo();
+            return mapper.toResponses(repository.findAll());
         }
         return mapper.toResponses(repository.findByCatalogoEstadoId(estadoId));
     }
@@ -56,7 +58,7 @@ public class CatalogoMunicipioServiceImpl implements CatalogoMunicipioService {
     @Transactional
     public CatalogoMunicipioResponse crear(CatalogoMunicipioRequest request) {
         CatalogoEstado estado = estadoRepository.findById(request.getEstadoId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + request.getEstadoId() + " no existe"));
+                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + request.getEstadoId() + NO_EXISTE));
 
         CatalogoMunicipio entidad = mapper.toEntity(request);
         entidad.setMunicipio(request.getMunicipio().trim());
@@ -71,7 +73,7 @@ public class CatalogoMunicipioServiceImpl implements CatalogoMunicipioService {
     public CatalogoMunicipioResponse actualizar(Long id, CatalogoMunicipioRequest request) {
         CatalogoMunicipio entidad = buscar(id);
         CatalogoEstado estado = estadoRepository.findById(request.getEstadoId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + request.getEstadoId() + " no existe"));
+                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + request.getEstadoId() + NO_EXISTE));
 
         mapper.updateEntity(request, entidad);
         entidad.setMunicipio(request.getMunicipio().trim());
@@ -91,6 +93,6 @@ public class CatalogoMunicipioServiceImpl implements CatalogoMunicipioService {
 
     private CatalogoMunicipio buscar(Long id) {
         return repository.findById(id)
-                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + id + " no existe"));
+                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + id + NO_EXISTE));
     }
 }

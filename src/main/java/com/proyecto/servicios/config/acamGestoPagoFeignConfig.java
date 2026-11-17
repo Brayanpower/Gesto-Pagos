@@ -5,7 +5,7 @@ import feign.Logger;
 import feign.RequestInterceptor;
 import org.springframework.context.annotation.Bean;
 
-public class acamGestoPagoFeignConfig {
+public class AcamGestoPagoFeignConfig {
 
     @Bean
     public RequestInterceptor gestoPagoAuthInterceptor(GestoPagoTokenService tokenService) {

@@ -4,7 +4,6 @@ import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
 import jakarta.persistence.EntityManagerFactory;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,11 +32,11 @@ import java.util.Map;
         entityManagerFactoryRef = "sfEntityManagerFactory"
 )
 public class ConfigDB {
-    @Autowired
-    private Environment env;
 
-    @Bean(name="sfDatasource")
-    public DataSource sfDatasource(){
+    private static final String SF_DATASOURCE = "sfDatasource";
+
+    @Bean(name = SF_DATASOURCE)
+    public DataSource sfDatasource(Environment env){
         HikariConfig config=new HikariConfig();
         try{
             config.setJdbcUrl(env.getProperty("spring.datasource.url"));
@@ -49,7 +48,7 @@ public class ConfigDB {
             config.setValidationTimeout(5000);
             config.setMinimumIdle(2);
             config.setConnectionTestQuery("SELECT 1");
-            config.setPoolName("sfDatasource");
+            config.setPoolName(SF_DATASOURCE);
 
         }catch (Exception e){
             log.error("Ha ocurrido un error en la conexcion a base de datos, a causa de:",e);
@@ -60,14 +59,15 @@ public class ConfigDB {
 
     @Bean(name="sfEntityManagerFactory")
     @DependsOn("flyway")
-    public LocalContainerEntityManagerFactoryBean sfEntityManagerFactory(){
+    public LocalContainerEntityManagerFactoryBean sfEntityManagerFactory(
+            @Qualifier(SF_DATASOURCE) DataSource dataSource){
         LocalContainerEntityManagerFactoryBean em= new LocalContainerEntityManagerFactoryBean();
         try{
-          em.setDataSource(sfDatasource());
+          em.setDataSource(dataSource);
           em.setPackagesToScan(
                   "com.proyecto.servicios.entity"
           );
-          em.setPersistenceUnitName("sfDatasource");
+          em.setPersistenceUnitName(SF_DATASOURCE);
             HibernateJpaVendorAdapter vendorAdapter = new HibernateJpaVendorAdapter();
             em.setJpaVendorAdapter(vendorAdapter);
           Map<String, Object> properties=new HashMap<>();
