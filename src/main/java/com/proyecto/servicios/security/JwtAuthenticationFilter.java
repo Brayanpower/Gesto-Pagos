@@ -20,6 +20,8 @@ import java.io.IOException;
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
+    private static final String BEARER_PREFIX = "Bearer ";
+
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
 
@@ -35,35 +37,43 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
             @NonNull FilterChain filterChain) throws ServletException, IOException {
 
         final String authHeader = request.getHeader("Authorization");
-        final String jwt;
-        final String userEmail;
 
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+        if (authHeader == null || !authHeader.startsWith(BEARER_PREFIX)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        jwt = authHeader.substring(7);
-        try {
-            userEmail = jwtService.extractUsername(jwt);
-            if (userEmail != null && SecurityContextHolder.getContext().getAuthentication() == null) {
-                UserDetails userDetails = this.userDetailsService.loadUserByUsername(userEmail);
-                if (userDetails.isEnabled()
-                        && userDetails.isAccountNonLocked()
-                        && jwtService.isTokenValid(jwt, userDetails)) {
-                    UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
-                            userDetails,
-                            null,
-                            userDetails.getAuthorities()
-                    );
-                    authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(authToken);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Error al procesar el token JWT: {}", e.getMessage());
+        final String jwt = authHeader.substring(BEARER_PREFIX.length()).trim();
+        if (jwt.isEmpty()) {
+            filterChain.doFilter(request, response);
+            return;
         }
 
+        autenticarDesdeJwt(request, jwt);
         filterChain.doFilter(request, response);
+    }
+
+    private void autenticarDesdeJwt(HttpServletRequest request, String jwt) {
+        try {
+            String userEmail = jwtService.extractUsername(jwt);
+            if (userEmail == null || SecurityContextHolder.getContext().getAuthentication() != null) {
+                return;
+            }
+            UserDetails userDetails = this.userDetailsService.loadUserByUsername(userEmail);
+            if (userDetails != null
+                    && userDetails.isEnabled()
+                    && userDetails.isAccountNonLocked()
+                    && jwtService.isTokenValid(jwt, userDetails)) {
+                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(
+                        userDetails,
+                        null,
+                        userDetails.getAuthorities()
+                );
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authToken);
+            }
+        } catch (Exception e) {
+            log.warn("No se pudo autenticar el token JWT [{}]", e.getClass().getSimpleName());
+        }
     }
 }
