@@ -4,7 +4,6 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.Digits;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Positive;
@@ -21,13 +20,12 @@ import java.math.BigDecimal;
 @NoArgsConstructor
 @AllArgsConstructor
 @JsonInclude(JsonInclude.Include.NON_NULL)
-@Schema(description = "Solicitud de recarga o pago de servicio con cargo a cuenta bancaria del cliente")
+@Schema(description = "Solicitud de recarga o pago de servicio con cargo a la cuenta de ahorro del cliente")
 public class SendTxRequest {
 
-    @NotBlank(message = "El numero de cuenta es obligatorio")
     @Size(min = 10, max = 20, message = "El numero de cuenta debe tener entre 10 y 20 digitos")
     @Pattern(regexp = "^\\d{10,20}$", message = "El numero de cuenta solo debe contener digitos")
-    @Schema(description = "Numero de cuenta activa del cliente desde la cual se descontara el monto", example = "1234567890")
+    @Schema(description = "Numero de cuenta de ahorro del cliente (opcional; si se omite se utiliza automaticamente su unica cuenta de ahorro)", example = "1234567890")
     private String numeroCuenta;
 
     @NotNull(message = "El identificador del servicio (idServicio) es obligatorio")

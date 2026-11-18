@@ -5,6 +5,7 @@ import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.clientes.DomicilioCliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
@@ -20,10 +21,12 @@ import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.clientes.DomicilioClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.ClienteService;
 import jakarta.persistence.criteria.Predicate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -58,6 +61,7 @@ public class ClienteServiceImpl implements ClienteService {
     private final ClienteMapper clienteMapper;
     private final DomicilioClienteMapper domicilioClienteMapper;
     private final PasswordEncoder passwordEncoder;
+    private final AuthenticatedUserService authenticatedUserService;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -75,7 +79,8 @@ public class ClienteServiceImpl implements ClienteService {
             CatalogoPaisRepository paisRepository,
             ClienteMapper clienteMapper,
             DomicilioClienteMapper domicilioClienteMapper,
-            PasswordEncoder passwordEncoder) {
+            PasswordEncoder passwordEncoder,
+            AuthenticatedUserService authenticatedUserService) {
         this.clienteRepository = clienteRepository;
         this.domicilioClienteRepository = domicilioClienteRepository;
         this.cuentaRepository = cuentaRepository;
@@ -90,6 +95,7 @@ public class ClienteServiceImpl implements ClienteService {
         this.clienteMapper = clienteMapper;
         this.domicilioClienteMapper = domicilioClienteMapper;
         this.passwordEncoder = passwordEncoder;
+        this.authenticatedUserService = authenticatedUserService;
     }
 
     @Override
@@ -158,26 +164,27 @@ public class ClienteServiceImpl implements ClienteService {
         clienteGuardado.setDomicilio(domicilioGuardado);
         log.info("Paso 2/4 exitoso: Domicilio persistido con ID {}", domicilioGuardado.getId());
 
-        // 6. Paso 3: Crear Cuenta Bancaria inicial automatica (Estatus ACTIVA)
+        // 6. Paso 3: Crear Cuenta de Ahorro unica inicial (Estatus PENDIENTE_REVISION para onboarding)
         BigDecimal saldoInicial = (request.getSaldoInicial() != null) ? request.getSaldoInicial() : BigDecimal.ZERO;
         String numeroCuenta = generarNumeroCuentaUnico();
 
         Cuenta cuenta = new Cuenta();
         cuenta.setCliente(clienteGuardado);
+        cuenta.setTipoCuenta(TipoCuenta.AHORRO);
         cuenta.setNumeroCuenta(numeroCuenta);
         cuenta.setSaldo(saldoInicial);
-        cuenta.setEstatus(EstatusCuenta.ACTIVA);
+        cuenta.setEstatus(EstatusCuenta.PENDIENTE_REVISION);
 
         Cuenta cuentaGuardada = cuentaRepository.save(cuenta);
-        clienteGuardado.getCuentas().add(cuentaGuardada);
-        log.info("Paso 3/4 exitoso: Cuenta bancaria creada con numero {} y saldo inicial {}", numeroCuenta, saldoInicial);
+        clienteGuardado.setCuenta(cuentaGuardada);
+        log.info("Paso 3/4 exitoso: Cuenta de ahorro {} creada en PENDIENTE_REVISION con saldo {}", numeroCuenta, saldoInicial);
 
         // 7. Paso 4: Crear Usuario de Acceso automatico (Password BCrypt)
         Usuario usuario = new Usuario();
         usuario.setCliente(clienteGuardado);
         usuario.setCorreo(correo);
         usuario.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        usuario.setRol("ROLE_CLIENTE");
+        usuario.setRol(AuthenticatedUserService.ROLE_CLIENTE);
         usuario.setActivo(true);
 
         Usuario usuarioGuardado = usuarioRepository.save(usuario);
@@ -186,13 +193,28 @@ public class ClienteServiceImpl implements ClienteService {
 
         ClienteResponse response = clienteMapper.toResponse(clienteGuardado);
         response.setCodigo(0);
-        response.setMensaje("Cliente, domicilio, cuenta bancaria inicial y usuario de acceso registrados exitosamente");
+        response.setMensaje("Cliente, domicilio, cuenta de ahorro unica (pendiente de revision) y usuario registrados exitosamente");
+        return response;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ClienteResponse obtenerMiPerfil() {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esCliente(usuario) || usuario.getCliente() == null) {
+            throw new AccessDeniedException("Solo un cliente con perfil asociado puede consultar su perfil de cliente.");
+        }
+        Cliente cliente = buscarClienteActivo(usuario.getCliente().getId());
+        ClienteResponse response = clienteMapper.toResponse(cliente);
+        response.setCodigo(0);
+        response.setMensaje("Consulta exitosa");
         return response;
     }
 
     @Override
     @Transactional(readOnly = true)
     public ClienteResponse obtenerPorId(Long id) {
+        validarAccesoCliente(id);
         Cliente cliente = buscarClienteActivo(id);
         ClienteResponse response = clienteMapper.toResponse(cliente);
         response.setCodigo(0);
@@ -209,6 +231,11 @@ public class ClienteServiceImpl implements ClienteService {
             String curp,
             String rfc,
             String correo) {
+
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esAdmin(usuario)) {
+            throw new AccessDeniedException("Solo un administrador puede consultar el listado general de clientes.");
+        }
 
         Specification<Cliente> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
@@ -246,6 +273,7 @@ public class ClienteServiceImpl implements ClienteService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ClienteResponse actualizar(Long id, ClienteUpdateRequest request) {
+        validarAccesoCliente(id);
         log.info("Actualizando informacion permitida para el cliente con ID: {}", id);
         Cliente cliente = buscarClienteActivo(id);
 
@@ -322,6 +350,11 @@ public class ClienteServiceImpl implements ClienteService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void darDeBaja(Long id) {
+        Usuario operador = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esAdmin(operador)) {
+            throw new AccessDeniedException("Solo un administrador puede dar de baja a un cliente.");
+        }
+
         log.info("Iniciando baja logica para el cliente con ID: {}", id);
         Cliente cliente = buscarClienteActivo(id);
 
@@ -335,19 +368,29 @@ public class ClienteServiceImpl implements ClienteService {
             log.info("Usuario de acceso ID {} desactivado por baja logica de cliente", cliente.getUsuario().getId());
         }
 
-        // 3. Inactivar cuentas bancarias asociadas
-        if (cliente.getCuentas() != null) {
-            for (Cuenta cuenta : cliente.getCuentas()) {
-                if (cuenta.getEstatus() == EstatusCuenta.ACTIVA) {
-                    cuenta.setEstatus(EstatusCuenta.INACTIVA);
-                    cuentaRepository.save(cuenta);
-                    log.info("Cuenta bancaria {} inactivada por baja logica de cliente", cuenta.getNumeroCuenta());
-                }
-            }
+        // 3. Inactivar su unica cuenta de ahorro si no esta cancelada ni rechazada
+        Cuenta cuenta = cliente.getCuenta();
+        if (cuenta != null
+                && cuenta.getEstatus() != EstatusCuenta.CANCELADA
+                && cuenta.getEstatus() != EstatusCuenta.RECHAZADA
+                && cuenta.getEstatus() != EstatusCuenta.INACTIVA) {
+            cuenta.setEstatus(EstatusCuenta.INACTIVA);
+            cuentaRepository.save(cuenta);
+            log.info("Cuenta de ahorro {} inactivada por baja logica de cliente", cuenta.getNumeroCuenta());
         }
 
         clienteRepository.save(cliente);
         log.info("Baja logica del cliente ID {} completada exitosamente", id);
+    }
+
+    private void validarAccesoCliente(Long clienteIdSolicitado) {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (authenticatedUserService.esAdmin(usuario)) {
+            return;
+        }
+        if (usuario.getCliente() == null || !usuario.getCliente().getId().equals(clienteIdSolicitado)) {
+            throw new AccessDeniedException("No tiene autorizacion para consultar o modificar informacion de otro cliente.");
+        }
     }
 
     private Cliente buscarClienteActivo(Long id) {

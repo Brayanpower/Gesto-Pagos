@@ -22,8 +22,7 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
-import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
-import com.proyecto.servicios.security.CustomUserDetails;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.CatalogoService;
 import com.proyecto.servicios.service.GestoPagoSendTxService;
 import com.proyecto.servicios.service.PagoServicioService;
@@ -37,10 +36,6 @@ import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.authentication.DisabledException;
-import org.springframework.security.authentication.InsufficientAuthenticationException;
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -74,7 +69,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
     private final GestoPagoSendTxService gestoPagoSendTxService;
     private final TransaccionServicioRepository transaccionRepository;
     private final CuentaRepository cuentaRepository;
-    private final UsuarioRepository usuarioRepository;
+    private final AuthenticatedUserService authenticatedUserService;
 
     @Value("${gestopago.tx.unidad:GPS83-TPV-17}")
     private String unidadDistribuidor;
@@ -97,21 +92,24 @@ public class PagoServicioServiceImpl implements PagoServicioService {
             GestoPagoSendTxService gestoPagoSendTxService,
             TransaccionServicioRepository transaccionRepository,
             CuentaRepository cuentaRepository,
-            UsuarioRepository usuarioRepository) {
+            AuthenticatedUserService authenticatedUserService) {
         this.catalogoService = catalogoService;
         this.persistenceService = persistenceService;
         this.gestoPagoSendTxService = gestoPagoSendTxService;
         this.transaccionRepository = transaccionRepository;
         this.cuentaRepository = cuentaRepository;
-        this.usuarioRepository = usuarioRepository;
+        this.authenticatedUserService = authenticatedUserService;
     }
 
     @Override
     public PagoServicioResponse procesarPagoServicio(SendTxRequest request, String headerIdempotencyKey) {
-        Usuario usuarioAutenticado = obtenerUsuarioAutenticadoActivo();
+        Usuario usuarioAutenticado = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esCliente(usuarioAutenticado)) {
+            throw new AccessDeniedException("Solo un cliente con cuenta de ahorro puede realizar compras de servicios.");
+        }
         Cliente cliente = validarYObtenerClienteActivo(usuarioAutenticado);
 
-        String numeroCuenta = request.getNumeroCuenta().trim();
+        String numeroCuenta = resolverNumeroCuentaAhorro(request.getNumeroCuenta(), cliente.getId());
         String claveIdempotencia = resolverYValidarClaveIdempotencia(request.getClaveIdempotencia(), headerIdempotencyKey);
         boolean tieneClaveExplicita = (headerIdempotencyKey != null && !headerIdempotencyKey.isBlank())
                 || (request.getClaveIdempotencia() != null && !request.getClaveIdempotencia().isBlank());
@@ -120,7 +118,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         if (tieneClaveExplicita) {
             Optional<TransaccionServicio> previaOpt = persistenceService.buscarPorClaveIdempotencia(claveIdempotencia);
             if (previaOpt.isPresent()) {
-                return resolverRespuestaIdempotente(previaOpt.get(), cliente.getId(), request);
+                return resolverRespuestaIdempotente(previaOpt.get(), cliente.getId(), numeroCuenta, request);
             }
         }
 
@@ -171,7 +169,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         if (upc == null || !PATTERN_UPC.matcher(upc.trim()).matches()) {
             throw new ReglaNegocioException("El folio UPC proporcionado no tiene un formato valido.");
         }
-        Usuario usuario = obtenerUsuarioAutenticadoActivo();
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
         TransaccionServicio tx = transaccionRepository.findByUpc(upc.trim())
                 .orElseThrow(() -> new ResourceNotFoundException("No se encontro ninguna transaccion con folio UPC: " + upc));
 
@@ -184,7 +182,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         if (upc == null || !PATTERN_UPC.matcher(upc.trim()).matches()) {
             throw new ReglaNegocioException("El folio UPC proporcionado no tiene un formato valido.");
         }
-        Usuario usuario = obtenerUsuarioAutenticadoActivo();
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
         TransaccionServicio tx = transaccionRepository.findByUpc(upc.trim())
                 .orElseThrow(() -> new ResourceNotFoundException("No se encontro ninguna transaccion con folio UPC: " + upc));
 
@@ -227,7 +225,10 @@ public class PagoServicioServiceImpl implements PagoServicioService {
             EstatusTransaccion estatus,
             Pageable pageable) {
 
-        Usuario usuario = obtenerUsuarioAutenticadoActivo();
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esCliente(usuario)) {
+            throw new AccessDeniedException("Solo un cliente puede consultar su historial de compras.");
+        }
         Cliente cliente = validarYObtenerClienteActivo(usuario);
 
         validarRangoFechasHistorial(fechaInicio, fechaFin);
@@ -478,13 +479,13 @@ public class PagoServicioServiceImpl implements PagoServicioService {
     }
 
     private PagoServicioResponse resolverRespuestaIdempotente(
-            TransaccionServicio existente, Long clienteAutenticadoId, SendTxRequest nuevoRequest) {
+            TransaccionServicio existente, Long clienteAutenticadoId, String numeroCuentaEfectivo, SendTxRequest nuevoRequest) {
 
         if (existente.getCliente() == null || !existente.getCliente().getId().equals(clienteAutenticadoId)) {
             throw new DuplicateResourceException("La clave de idempotencia indicada no es valida para esta operacion.");
         }
 
-        boolean mismosParametros = Objects.equals(existente.getNumeroCuenta(), nuevoRequest.getNumeroCuenta().trim())
+        boolean mismosParametros = Objects.equals(existente.getNumeroCuenta(), numeroCuentaEfectivo)
                 && Objects.equals(existente.getIdServicio(), nuevoRequest.getIdServicio())
                 && Objects.equals(existente.getIdProducto(), nuevoRequest.getIdProducto())
                 && existente.getMonto().compareTo(nuevoRequest.getMontoPago()) == 0;
@@ -516,26 +517,13 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         return aPagoServicioResponse(existente, true);
     }
 
-    private Usuario obtenerUsuarioAutenticadoActivo() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
-            throw new InsufficientAuthenticationException("Se requiere autenticacion valida del cliente.");
+    private String resolverNumeroCuentaAhorro(String numeroCuentaRequest, Long clienteId) {
+        if (numeroCuentaRequest != null && !numeroCuentaRequest.isBlank()) {
+            return numeroCuentaRequest.trim();
         }
-
-        Usuario usuario;
-        if (auth.getPrincipal() instanceof CustomUserDetails customDetails) {
-            usuario = usuarioRepository.findWithClienteByCorreo(customDetails.getUsername())
-                    .orElse(customDetails.getUsuario());
-        } else {
-            String correo = auth.getName();
-            usuario = usuarioRepository.findWithClienteByCorreo(correo)
-                    .orElseThrow(() -> new InsufficientAuthenticationException("Usuario autenticado no encontrado."));
-        }
-
-        if (!usuario.isActivo()) {
-            throw new DisabledException("El usuario se encuentra inactivo para realizar operaciones.");
-        }
-        return usuario;
+        Cuenta cuentaUnica = cuentaRepository.findByClienteId(clienteId)
+                .orElseThrow(() -> new ResourceNotFoundException("El cliente no tiene una cuenta de ahorro asociada."));
+        return cuentaUnica.getNumeroCuenta();
     }
 
     private Cliente validarYObtenerClienteActivo(Usuario usuario) {
@@ -550,8 +538,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
     }
 
     private void validarAccesoTransaccion(Usuario usuario, TransaccionServicio tx) {
-        boolean esAdmin = "ROLE_ADMIN".equalsIgnoreCase(usuario.getRol());
-        if (esAdmin) {
+        if (authenticatedUserService.esAdmin(usuario)) {
             return;
         }
         Cliente cliente = validarYObtenerClienteActivo(usuario);

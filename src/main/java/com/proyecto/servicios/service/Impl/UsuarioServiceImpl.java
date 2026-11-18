@@ -15,12 +15,12 @@ import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.UsuarioService;
 import jakarta.persistence.criteria.Predicate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -33,8 +33,6 @@ import java.util.List;
 @Service
 @Slf4j
 public class UsuarioServiceImpl implements UsuarioService {
-
-    private static final String ROL_DEFAULT = "ROLE_CLIENTE";
 
     private final UsuarioRepository usuarioRepository;
     private final ClienteRepository clienteRepository;
@@ -57,33 +55,59 @@ public class UsuarioServiceImpl implements UsuarioService {
     public UsuarioResponse crear(UsuarioCreacionRequest request) {
         log.info("Iniciando alta de usuario con correo: {}", request.getCorreo());
 
-        Cliente cliente = clienteRepository.findById(request.getClienteId())
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente no encontrado con ID: " + request.getClienteId()));
-
-        if (!cliente.isActivo()) {
-            throw new ReglaNegocioException("No es posible crear un usuario para un cliente inactivo (ID: " + cliente.getId() + ")");
-        }
-
+        String rol = resolverRolCreacion(request);
         String correo = request.getCorreo().trim().toLowerCase();
 
         if (usuarioRepository.existsByCorreo(correo) || clienteRepository.existsByCorreo(correo)) {
             throw new DuplicateResourceException("Ya existe un usuario registrado con el correo: " + correo);
         }
-        if (cliente.getUsuario() != null) {
-            throw new DuplicateResourceException("El cliente con ID " + cliente.getId() + " ya tiene un usuario de acceso asignado");
-        }
+
+        Cliente cliente = resolverClienteParaRol(rol, request.getClienteId());
 
         Usuario usuario = new Usuario();
         usuario.setCliente(cliente);
         usuario.setCorreo(correo);
         usuario.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        usuario.setRol((request.getRol() == null || request.getRol().isBlank()) ? ROL_DEFAULT : request.getRol().trim().toUpperCase());
+        usuario.setRol(rol);
         usuario.setActivo(true);
 
         Usuario guardado = usuarioRepository.save(usuario);
-        log.info("Usuario creado exitosamente con ID {}", guardado.getId());
+        log.info("Usuario creado exitosamente con ID {} y rol {}", guardado.getId(), guardado.getRol());
 
         return construirResponse(guardado, "Usuario creado exitosamente");
+    }
+
+    private String resolverRolCreacion(UsuarioCreacionRequest request) {
+        if (request.getRol() == null || request.getRol().isBlank()) {
+            return request.getClienteId() == null
+                    ? AuthenticatedUserService.ROLE_ADMIN
+                    : AuthenticatedUserService.ROLE_CLIENTE;
+        }
+        return request.getRol().trim().toUpperCase();
+    }
+
+    private Cliente resolverClienteParaRol(String rol, Long clienteId) {
+        if (AuthenticatedUserService.ROLE_ADMIN.equals(rol)) {
+            if (clienteId != null) {
+                throw new ReglaNegocioException("Un usuario ROLE_ADMIN no puede estar vinculado a un cliente ni a una cuenta bancaria.");
+            }
+            return null;
+        }
+
+        if (clienteId == null) {
+            throw new ReglaNegocioException("Un usuario ROLE_CLIENTE debe asociarse a un cliente existente.");
+        }
+
+        Cliente cliente = clienteRepository.findById(clienteId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cliente no encontrado con ID: " + clienteId));
+
+        if (!cliente.isActivo()) {
+            throw new ReglaNegocioException("No es posible crear un usuario para un cliente inactivo (ID: " + cliente.getId() + ")");
+        }
+        if (cliente.getUsuario() != null) {
+            throw new DuplicateResourceException("El cliente con ID " + cliente.getId() + " ya tiene un usuario de acceso asignado");
+        }
+        return cliente;
     }
 
     @Override
@@ -149,7 +173,10 @@ public class UsuarioServiceImpl implements UsuarioService {
         }
 
         if (request.getRol() != null && !request.getRol().isBlank()) {
-            usuario.setRol(request.getRol().trim().toUpperCase());
+            String rolSolicitado = request.getRol().trim().toUpperCase();
+            if (!usuario.getRol().equalsIgnoreCase(rolSolicitado)) {
+                throw new ReglaNegocioException("No esta permitido cambiar el rol de un usuario existente.");
+            }
         }
 
         Usuario guardado = usuarioRepository.save(usuario);

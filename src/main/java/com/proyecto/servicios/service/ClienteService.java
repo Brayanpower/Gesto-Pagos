@@ -10,6 +10,8 @@ public interface ClienteService {
 
     ClienteResponse registrarCliente(ClienteRegistroRequest request);
 
+    ClienteResponse obtenerMiPerfil();
+
     ClienteResponse obtenerPorId(Long id);
 
     List<ClienteResponse> buscarConFiltros(

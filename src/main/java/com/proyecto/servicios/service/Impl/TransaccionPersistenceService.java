@@ -2,11 +2,13 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.gestopago.TransaccionServicio;
 import com.proyecto.servicios.exception.CuentaNoOperativaException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.SaldoInsuficienteException;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult;
@@ -86,9 +88,12 @@ public class TransaccionPersistenceService {
             throw new AccessDeniedException("El cliente titular no se encuentra activo para realizar operaciones.");
         }
 
+        if (cuenta.getTipoCuenta() != null && cuenta.getTipoCuenta() != TipoCuenta.AHORRO) {
+            throw new ReglaNegocioException("Solo esta permitido operar compras de servicios desde una cuenta de ahorro.");
+        }
+
         if (cuenta.getEstatus() != EstatusCuenta.ACTIVA) {
-            throw new CuentaNoOperativaException(
-                    "La cuenta bancaria no se encuentra activa (estatus: " + cuenta.getEstatus() + ").");
+            throw new CuentaNoOperativaException(mensajeCuentaNoOperativa(cuenta.getEstatus()));
         }
 
         Optional<TransaccionServicio> existentePorClave = transaccionRepository.findByClaveIdempotencia(claveIdempotencia);
@@ -242,6 +247,16 @@ public class TransaccionPersistenceService {
             upc = String.valueOf(numero);
         } while (transaccionRepository.existsByUpc(upc));
         return upc;
+    }
+
+    private static String mensajeCuentaNoOperativa(EstatusCuenta estatus) {
+        if (estatus == EstatusCuenta.PENDIENTE_REVISION) {
+            return "Tu cuenta de ahorro aun se encuentra pendiente de revision y aprobacion por un administrador.";
+        }
+        if (estatus == EstatusCuenta.RECHAZADA) {
+            return "Tu cuenta de ahorro fue rechazada en la revision de onboarding y no puede realizar compras.";
+        }
+        return "La cuenta de ahorro no se encuentra activa (estatus: " + estatus + ").";
     }
 
     private static String truncar(String valor, int max) {

@@ -19,13 +19,14 @@ public class JwtAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
     @Override
     public void commence(HttpServletRequest request, HttpServletResponse response,
-                         AuthenticationException authException) throws IOException {
+            AuthenticationException authException) throws IOException {
         response.setContentType(MediaType.APPLICATION_JSON_VALUE);
         response.setStatus(HttpStatus.UNAUTHORIZED.value());
 
         GenericResponse genericResponse = new GenericResponse();
         genericResponse.setCodigo(HttpStatus.UNAUTHORIZED.value());
-        genericResponse.setMensaje("No autorizado: Se requiere un token JWT valido para acceder a este recurso bancario");
+        genericResponse
+                .setMensaje("No autorizado: Se requiere un token JWT valido para acceder a este recurso bancario");
 
         response.getWriter().write(objectMapper.writeValueAsString(genericResponse));
     }

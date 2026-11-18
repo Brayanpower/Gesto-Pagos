@@ -4,7 +4,6 @@ import com.proyecto.servicios.entity.clientes.Cliente;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Getter;
@@ -26,9 +25,8 @@ public class Usuario {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @NotNull(message = "El cliente asociado es obligatorio")
     @OneToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cliente_id", nullable = false, unique = true)
+    @JoinColumn(name = "cliente_id", unique = true)
     private Cliente cliente;
 
     @NotBlank(message = "El correo electronico es obligatorio")

@@ -3,6 +3,7 @@ package com.proyecto.servicios.service.Impl;
 import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.gestopago.TransaccionServicio;
@@ -111,7 +112,7 @@ class TransaccionPersistenceServiceTest {
     }
 
     @Test
-    @DisplayName("Cuenta bloqueada o inactiva lanza CuentaNoOperativaException")
+    @DisplayName("Cuenta bloqueada, pendiente de revision o inactiva lanza CuentaNoOperativaException")
     void reservarYDebitarSaldo_cuentaBloqueada() {
         Cuenta bloqueada = cuentaActiva(10L, "1234567890", new BigDecimal("500.00"));
         bloqueada.setEstatus(EstatusCuenta.BLOQUEADA);
@@ -120,6 +121,14 @@ class TransaccionPersistenceServiceTest {
         assertThrows(CuentaNoOperativaException.class, () ->
                 persistenceService.reservarYDebitarSaldo(comandoPrueba(
                         10L, "1234567890", "idem-0001", new BigDecimal("100.00"))));
+
+        Cuenta pendiente = cuentaActiva(10L, "1234567891", new BigDecimal("500.00"));
+        pendiente.setEstatus(EstatusCuenta.PENDIENTE_REVISION);
+        when(cuentaRepository.findByNumeroCuentaForUpdate("1234567891")).thenReturn(Optional.of(pendiente));
+
+        assertThrows(CuentaNoOperativaException.class, () ->
+                persistenceService.reservarYDebitarSaldo(comandoPrueba(
+                        10L, "1234567891", "idem-0002", new BigDecimal("100.00"))));
     }
 
     @Test
@@ -200,6 +209,7 @@ class TransaccionPersistenceServiceTest {
         cuenta.setId(1L);
         cuenta.setCliente(cliente);
         cuenta.setNumeroCuenta(numeroCuenta);
+        cuenta.setTipoCuenta(TipoCuenta.AHORRO);
         cuenta.setSaldo(saldo);
         cuenta.setEstatus(EstatusCuenta.ACTIVA);
         return cuenta;
