@@ -90,3 +90,9 @@ logging.level.com.proyecto.servicios=INFO
 app.admin.bootstrap.enabled=${ADMIN_BOOTSTRAP_ENABLED:false}
 app.admin.bootstrap.correo=${ADMIN_BOOTSTRAP_CORREO:}
 app.admin.bootstrap.password=${ADMIN_BOOTSTRAP_PASSWORD:}
+
+# Cliente demo con cuenta de ahorro ACTIVA para QA local
+app.demo.cliente.bootstrap.enabled=${DEMO_CLIENTE_BOOTSTRAP_ENABLED:false}
+app.demo.cliente.bootstrap.correo=${DEMO_CLIENTE_BOOTSTRAP_CORREO:}
+app.demo.cliente.bootstrap.password=${DEMO_CLIENTE_BOOTSTRAP_PASSWORD:}
+app.demo.cliente.bootstrap.saldo-inicial=${DEMO_CLIENTE_BOOTSTRAP_SALDO:5000.00}
