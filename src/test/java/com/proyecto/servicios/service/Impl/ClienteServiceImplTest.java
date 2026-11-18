@@ -305,6 +305,7 @@ class ClienteServiceImplTest {
 
         assertFalse(cliente.isActivo());
         assertFalse(usuario.isActivo());
+        assertEquals(1L, usuario.getTokenVersion());
         assertEquals(EstatusCuenta.INACTIVA, activa.getEstatus());
         verify(usuarioRepository).save(usuario);
         verify(cuentaRepository).save(activa);

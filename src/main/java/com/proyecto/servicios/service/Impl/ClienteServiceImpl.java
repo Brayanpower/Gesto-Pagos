@@ -361,9 +361,10 @@ public class ClienteServiceImpl implements ClienteService {
         // 1. Desactivar cliente
         cliente.setActivo(false);
 
-        // 2. Desactivar usuario de acceso asociado
+        // 2. Desactivar usuario de acceso asociado e invalidar tokens activos
         if (cliente.getUsuario() != null) {
             cliente.getUsuario().setActivo(false);
+            cliente.getUsuario().incrementarTokenVersion();
             usuarioRepository.save(cliente.getUsuario());
             log.info("Usuario de acceso ID {} desactivado por baja logica de cliente", cliente.getUsuario().getId());
         }

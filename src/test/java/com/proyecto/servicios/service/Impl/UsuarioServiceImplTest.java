@@ -14,6 +14,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -52,6 +53,7 @@ class UsuarioServiceImplTest {
     @Mock private ClienteRepository clienteRepository;
     @Mock private UsuarioMapper usuarioMapper;
     @Mock private PasswordEncoder passwordEncoder;
+    @Mock private RefreshTokenRepository refreshTokenRepository;
 
     @InjectMocks
     private UsuarioServiceImpl servicio;
@@ -235,7 +237,7 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Actualizacion exitosa cifra la nueva contrasena manteniendo el rol sin cambios")
+    @DisplayName("Actualizacion exitosa cifra la nueva contrasena, incrementa tokenVersion y revoca sesiones")
     void actualizar_exito_cifraPassword() {
         Usuario existente = usuarioConId(10L);
         when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
@@ -248,6 +250,28 @@ class UsuarioServiceImplTest {
         assertEquals(0, response.getCodigo());
         assertEquals("$2a$10$nuevoHash", existente.getPasswordHash());
         assertEquals("ROLE_CLIENTE", existente.getRol());
+        assertEquals(1L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Actualizacion solo de correo sin cambiar password no revoca sesiones")
+    void actualizar_sinCambioPassword_noRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.existsByCorreoAndIdNot("nuevo@banco.com", 10L)).thenReturn(false);
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioActualizacionRequest request = new UsuarioActualizacionRequest();
+        request.setId(10L);
+        request.setCorreo("nuevo@banco.com");
+
+        UsuarioResponse response = servicio.actualizar(request);
+
+        assertEquals(0, response.getCodigo());
+        assertEquals(0L, existente.getTokenVersion());
+        verify(refreshTokenRepository, never()).revocarTodosPorUsuarioId(any());
     }
 
     @Test
@@ -272,7 +296,7 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Desactivar otro usuario funciona y responde codigo 0")
+    @DisplayName("Desactivar otro usuario funciona, incrementa tokenVersion y revoca sus sesiones")
     void cambiarEstado_desactivarOtroUsuario_exitoso() {
         Usuario existente = usuarioConId(10L);
         when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
@@ -284,6 +308,26 @@ class UsuarioServiceImplTest {
 
         assertEquals(0, response.getCodigo());
         assertFalse(existente.isActivo());
+        assertEquals(1L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Activar usuario no incrementa tokenVersion ni revoca sesiones")
+    void cambiarEstado_activarUsuario_noRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        existente.setActivo(false);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        autenticarComo("otro@banco.com");
+        UsuarioResponse response = servicio.cambiarEstado(estadoRequest(10L, true));
+
+        assertEquals(0, response.getCodigo());
+        assertTrue(existente.isActivo());
+        assertEquals(0L, existente.getTokenVersion());
+        verify(refreshTokenRepository, never()).revocarTodosPorUsuarioId(any());
     }
 
     @Test

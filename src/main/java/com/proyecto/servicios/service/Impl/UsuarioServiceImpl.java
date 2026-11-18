@@ -14,6 +14,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.UsuarioService;
@@ -38,16 +39,19 @@ public class UsuarioServiceImpl implements UsuarioService {
     private final ClienteRepository clienteRepository;
     private final UsuarioMapper usuarioMapper;
     private final PasswordEncoder passwordEncoder;
+    private final RefreshTokenRepository refreshTokenRepository;
 
     public UsuarioServiceImpl(
             UsuarioRepository usuarioRepository,
             ClienteRepository clienteRepository,
             UsuarioMapper usuarioMapper,
-            PasswordEncoder passwordEncoder) {
+            PasswordEncoder passwordEncoder,
+            RefreshTokenRepository refreshTokenRepository) {
         this.usuarioRepository = usuarioRepository;
         this.clienteRepository = clienteRepository;
         this.usuarioMapper = usuarioMapper;
         this.passwordEncoder = passwordEncoder;
+        this.refreshTokenRepository = refreshTokenRepository;
     }
 
     @Override
@@ -168,8 +172,11 @@ public class UsuarioServiceImpl implements UsuarioService {
             }
         }
 
+        boolean passwordActualizado = false;
         if (request.getPassword() != null && !request.getPassword().isBlank()) {
             usuario.setPasswordHash(passwordEncoder.encode(request.getPassword()));
+            usuario.incrementarTokenVersion();
+            passwordActualizado = true;
         }
 
         if (request.getRol() != null && !request.getRol().isBlank()) {
@@ -180,6 +187,9 @@ public class UsuarioServiceImpl implements UsuarioService {
         }
 
         Usuario guardado = usuarioRepository.save(usuario);
+        if (passwordActualizado) {
+            refreshTokenRepository.revocarTodosPorUsuarioId(usuario.getId());
+        }
         log.info("Usuario con ID {} actualizado exitosamente", guardado.getId());
 
         return construirResponse(guardado, "Usuario actualizado exitosamente");
@@ -193,13 +203,20 @@ public class UsuarioServiceImpl implements UsuarioService {
         Usuario usuario = usuarioRepository.findById(request.getId())
                 .orElseThrow(() -> new UsuarioNotFoundException(request.getId()));
 
-        if (Boolean.FALSE.equals(request.getActivo()) && estaAutenticadoComo(usuario.getCorreo())) {
+        boolean desactivando = Boolean.FALSE.equals(request.getActivo());
+        if (desactivando && estaAutenticadoComo(usuario.getCorreo())) {
             throw new ReglaNegocioException("No es posible desactivar la cuenta con la que se encuentra autenticado");
         }
 
         usuario.setActivo(request.getActivo());
+        if (desactivando) {
+            usuario.incrementarTokenVersion();
+        }
 
         Usuario guardado = usuarioRepository.save(usuario);
+        if (desactivando) {
+            refreshTokenRepository.revocarTodosPorUsuarioId(usuario.getId());
+        }
         String mensaje = guardado.isActivo()
                 ? "Usuario activado exitosamente"
                 : "Usuario desactivado exitosamente";
