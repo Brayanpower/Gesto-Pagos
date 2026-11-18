@@ -21,7 +21,19 @@ spring.datasource.driver-class-name=org.postgresql.Driver
 app.crypto.iv=${APP_CRYPTO_IV}
 app.crypto.key=${APP_CRYPTO_KEY}
 jwt.secret=${JWT_SECRET}
-jwt.expiration=${JWT_EXPIRATION_MS:86400000}
+jwt.expiration=${JWT_EXPIRATION_MS:900000}
+jwt.issuer=${JWT_ISSUER:sistema-bancario-core}
+jwt.refresh-expiration-ms=${JWT_REFRESH_EXPIRATION_MS:604800000}
+
+# Seguridad de Login (Bloqueo, Rate Limit, TOTP y CORS)
+app.auth.max-failed-attempts=${AUTH_MAX_FAILED_ATTEMPTS:5}
+app.auth.lockout-minutes=${AUTH_LOCKOUT_MINUTES:15}
+app.auth.rate-limit.max-attempts=${AUTH_RATE_LIMIT_MAX_ATTEMPTS:15}
+app.auth.rate-limit.window-seconds=${AUTH_RATE_LIMIT_WINDOW_SECONDS:60}
+app.auth.totp.issuer=${AUTH_TOTP_ISSUER:SistemaBancario}
+app.auth.totp.challenge-minutes=${AUTH_TOTP_CHALLENGE_MINUTES:5}
+app.auth.totp.max-attempts=${AUTH_TOTP_MAX_ATTEMPTS:3}
+app.cors.allowed-origins=${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
 
 # ----------------------------------------------------------------------
 # JPA / Hibernate & Flyway

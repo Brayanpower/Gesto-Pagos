@@ -46,11 +46,42 @@ public class Usuario {
     @Column(nullable = false)
     private boolean activo;
 
+    @Column(name = "intentos_fallidos", nullable = false)
+    private Integer intentosFallidos = 0;
+
+    @Column(name = "bloqueado_hasta")
+    private LocalDateTime bloqueadoHasta;
+
+    @Column(name = "ultimo_login")
+    private LocalDateTime ultimoLogin;
+
+    @Column(name = "token_version", nullable = false)
+    private Long tokenVersion = 0L;
+
+    @Column(name = "totp_obligatorio", nullable = false)
+    private boolean totpObligatorio = true;
+
+    @Column(name = "totp_habilitado", nullable = false)
+    private boolean totpHabilitado = false;
+
+    @Column(name = "totp_secret_enc", length = 255)
+    private String totpSecretEnc;
+
+    @Column(name = "totp_configurado_en")
+    private LocalDateTime totpConfiguradoEn;
+
+    @Column(name = "totp_ultimo_paso")
+    private Long totpUltimoPaso;
+
     @Column(name = "fecha_creacion", nullable = false, updatable = false)
     private LocalDateTime fechaCreacion;
 
     @Column(name = "fecha_actualizacion")
     private LocalDateTime fechaActualizacion;
+
+    public void incrementarTokenVersion() {
+        this.tokenVersion = (this.tokenVersion == null ? 0L : this.tokenVersion) + 1L;
+    }
 
     @PrePersist
     public void prePersist() {
@@ -59,6 +90,12 @@ public class Usuario {
             this.rol = "ROLE_CLIENTE";
         }
         this.activo = true;
+        if (this.intentosFallidos == null) {
+            this.intentosFallidos = 0;
+        }
+        if (this.tokenVersion == null) {
+            this.tokenVersion = 0L;
+        }
     }
 
     @PreUpdate

@@ -20,6 +20,13 @@ public class AuthResponse extends GenericResponse {
     private String rol;
     private Long clienteId;
     private String nombreCompleto;
+    private String refreshToken;
+    private Long expiresInSegundos;
+    private Boolean requiereTotp;
+    private Boolean totpConfiguracionRequerida;
+    private String challengeToken;
+    private String totpSecret;
+    private String otpauthUri;
 
     public AuthResponse(String token, String correo, String rol, Long clienteId, String nombreCompleto) {
         super();
