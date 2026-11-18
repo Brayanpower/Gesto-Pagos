@@ -54,6 +54,7 @@ spring.flyway.baseline-version=0
 gestopago.auth.url=${GESTOPAGO_URL:https://gestopago.portalventas.net}
 # Si el gestor de secretos provee directamente el token Bearer:
 gestopago.auth.bearer-token=${GESTOPAGO_BEARER_TOKEN:}
+gestopago.auth.api-key=${GESTOPAGO_API_KEY:}
 # O credenciales para obtencion/renovacion automatica cifrada en reposo:
 gestopago.auth.id-distribuidor=${GESTOPAGO_ID_DISTRIBUIDOR}
 gestopago.auth.codigo-dispositivo=${GESTOPAGO_CODIGO_DISPOSITIVO}

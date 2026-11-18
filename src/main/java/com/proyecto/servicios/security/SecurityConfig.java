@@ -85,7 +85,11 @@ public class SecurityConfig {
                         .requestMatchers("/catalogos/**").hasRole("ADMIN")
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/gestopago/catalogo").permitAll()
+                        .requestMatchers(HttpMethod.GET,
+                                "/gestopago/catalogo",
+                                "/gestopago/servicios/*/logo",
+                                "/gestopago/servicios/*/referencia")
+                        .permitAll()
                         .anyRequest().authenticated()
                 )
                 .authenticationProvider(authenticationProvider())
