@@ -43,7 +43,7 @@ public class CatalogoNacionalidadServiceImpl implements CatalogoNacionalidadServ
     @Transactional(readOnly = true)
     public List<CatalogoNacionalidadResponse> buscarPorNombre(String nombre) {
         if (nombre == null || nombre.isBlank()) {
-            return obtenerCatalogo();
+            return mapper.toResponses(repository.findAll());
         }
         return mapper.toResponses(repository.findByNombreContainingIgnoreCaseOrderByNombreAsc(nombre.trim()));
     }

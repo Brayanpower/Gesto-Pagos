@@ -19,6 +19,8 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -34,19 +36,21 @@ class CatalogoServiceImplTest {
     private CatalogoServiceImpl servicio;
 
     @Test
-    @DisplayName("reemplazarCatalogo borra el catalogo anterior e inserta el nuevo")
+    @DisplayName("reemplazarCatalogo realiza upsert sin ventana vacia y depura obsoletos con deleteByIdNotIn")
+    @SuppressWarnings("unchecked")
     void reemplazarCatalogo_exito_borraEInserta() {
         GestoPagoCatProductResponse respuesta = respuestaConDosProductos();
 
         servicio.reemplazarCatalogo(respuesta);
 
-        verify(catalogoProductoRepository, times(1)).deleteAll();
-
         ArgumentCaptor<List<CatalogoProducto>> captor = ArgumentCaptor.forClass(List.class);
         verify(catalogoProductoRepository, times(1)).saveAll(captor.capture());
+        verify(catalogoProductoRepository, times(1)).deleteByIdNotIn(List.of("2284:14302", "2284:14305"));
+        verify(catalogoProductoRepository, never()).deleteAll();
 
         List<CatalogoProducto> documentos = captor.getValue();
         assertEquals(2, documentos.size());
+        assertEquals("2284:14302", documentos.get(0).getId());
         assertEquals("ABIB 100", documentos.get(0).getNombreProducto());
         assertEquals("14302", documentos.get(0).getIdProducto());
         assertEquals("100.0", documentos.get(0).getPrecio());
@@ -54,9 +58,14 @@ class CatalogoServiceImplTest {
     }
 
     @Test
-    @DisplayName("reemplazarCatalogo con respuesta nula lanza excepcion")
+    @DisplayName("reemplazarCatalogo con respuesta nula o lista vacia lanza excepcion sin modificar MongoDB")
     void reemplazarCatalogo_respuestaNula_lanza() {
         assertThrows(IllegalArgumentException.class, () -> servicio.reemplazarCatalogo(null));
+
+        GestoPagoCatProductResponse vacio = respuestaConDosProductos();
+        vacio.getProductos().setProductos(List.of());
+        assertThrows(IllegalArgumentException.class, () -> servicio.reemplazarCatalogo(vacio));
+        verify(catalogoProductoRepository, never()).deleteByIdNotIn(any());
     }
 
     @Test

@@ -7,7 +7,8 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult.EstadoProveedor;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.security.LogSanitizer;
-import com.proyecto.servicios.service.EncryptionHelper;
+import com.proyecto.servicios.service.GestoPagoPayloadCrypto;
+import com.proyecto.servicios.service.GestoPagoTokenService;
 import feign.FeignException;
 import feign.Request;
 import feign.RequestTemplate;
@@ -41,20 +42,24 @@ import static org.mockito.Mockito.when;
 @DisplayName("Pruebas de GestoPagoSendTxServiceImpl")
 class GestoPagoSendTxServiceImplTest {
 
-    private static final String TEST_IV = "p5ldmBPdd/9pjC0bDC/nSg==";
     private static final String TEST_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
+    private static final String TEST_IV = "p5ldmBPdd/9pjC0bDC/nSg==";
 
     @Mock
     private GestoPagoSendTx gestoPagoSendTx;
 
-    private EncryptionHelper encryptionHelper;
+    @Mock
+    private GestoPagoTokenService gestoPagoTokenService;
+
+    private GestoPagoPayloadCrypto payloadCrypto;
     private GestoPagoSendTxServiceImpl servicio;
 
     @BeforeEach
     void setUp() {
         ObjectMapper objectMapper = new ObjectMapper();
-        encryptionHelper = new EncryptionHelperImpl(objectMapper, TEST_IV, TEST_KEY);
-        servicio = new GestoPagoSendTxServiceImpl(gestoPagoSendTx, encryptionHelper, objectMapper);
+        payloadCrypto = new GestoPagoPayloadCryptoImpl(objectMapper, TEST_KEY, TEST_IV);
+        servicio = new GestoPagoSendTxServiceImpl(
+                gestoPagoSendTx, payloadCrypto, objectMapper, gestoPagoTokenService);
     }
 
     @Test
@@ -95,7 +100,7 @@ class GestoPagoSendTxServiceImplTest {
         String signed = form.getFirst("signed");
         assertNotNull(signed);
 
-        SendTx descifrado = encryptionHelper.decrypt(signed, SendTx.class);
+        SendTx descifrado = payloadCrypto.decrypt(signed, SendTx.class);
         assertEquals(2284, descifrado.getIdServicio());
         assertEquals(14302, descifrado.getIdProducto());
         assertEquals(0, new BigDecimal("100.00").compareTo(descifrado.getMontoPago()));
@@ -106,7 +111,7 @@ class GestoPagoSendTxServiceImplTest {
     @DisplayName("Soporta respuesta cifrada en AES Base64 devuelta por GestoPago")
     void ejecutarTransaccion_respuestaCifradaAes_descifraYAprueba() {
         String jsonClaro = "{\"MENSAJE\":{\"CODIGO\":\"01\",\"TEXTO\":\"Recarga aplicada\"},\"ID_TX\":\"554433\",\"NUM_AUTORIZACION\":\"OK777\"}";
-        String cuerpoCifrado = encryptionHelper.encrypt(jsonClaro);
+        String cuerpoCifrado = payloadCrypto.encrypt(jsonClaro);
 
         when(gestoPagoSendTx.sendTx(any())).thenReturn(ResponseEntity.ok(cuerpoCifrado));
 
@@ -214,6 +219,7 @@ class GestoPagoSendTxServiceImplTest {
                 .build();
 
         assertThrows(ProveedorExternoException.class, () -> servicio.ejecutarTransaccion(tx));
+        verify(gestoPagoTokenService, org.mockito.Mockito.never()).invalidarTokenActual();
     }
 
     @Test
@@ -231,6 +237,7 @@ class GestoPagoSendTxServiceImplTest {
                 .build();
 
         assertThrows(ProveedorExternoException.class, () -> servicio.ejecutarTransaccion(tx));
+        verify(gestoPagoTokenService).invalidarTokenActual();
     }
 
     @Test

@@ -3,6 +3,7 @@ package com.proyecto.servicios.service.Impl;
 import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.gestopago.TransaccionServicio;
@@ -20,11 +21,9 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
-import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
-import com.proyecto.servicios.security.CustomUserDetails;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.CatalogoService;
 import com.proyecto.servicios.service.GestoPagoSendTxService;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,11 +32,11 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.security.access.AccessDeniedException;
-import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
@@ -69,7 +68,7 @@ class PagoServicioServiceImplTest {
     @Mock private GestoPagoSendTxService gestoPagoSendTxService;
     @Mock private TransaccionServicioRepository transaccionRepository;
     @Mock private CuentaRepository cuentaRepository;
-    @Mock private UsuarioRepository usuarioRepository;
+    @Mock private AuthenticatedUserService authenticatedUserService;
 
     @InjectMocks
     private PagoServicioServiceImpl servicio;
@@ -94,32 +93,20 @@ class PagoServicioServiceImplTest {
         usuarioCliente.setId(1L);
         usuarioCliente.setCorreo("cliente@banco.com");
         usuarioCliente.setPasswordHash("hash");
-        usuarioCliente.setRol("ROLE_CLIENTE");
+        usuarioCliente.setRol(AuthenticatedUserService.ROLE_CLIENTE);
         usuarioCliente.setActivo(true);
         usuarioCliente.setCliente(cliente);
-
-        CustomUserDetails details = new CustomUserDetails(usuarioCliente);
-        SecurityContextHolder.getContext().setAuthentication(
-                new UsernamePasswordAuthenticationToken(details, null, details.getAuthorities())
-        );
-    }
-
-    @AfterEach
-    void tearDown() {
-        SecurityContextHolder.clearContext();
     }
 
     @Test
     @DisplayName("Flujo completo exitoso: valida catalogo, descuenta saldo, envia a GestoPago y confirma EXITOSA")
     void procesarPagoServicio_exitoCompleto() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
 
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                eq(10L), eq("1234567890"), anyString(), any(), eq(2284), eq(14302),
-                eq(new BigDecimal("100.00")), eq("5512345678"), eq(null)))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult aprobado = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.APROBADA)
@@ -153,9 +140,69 @@ class PagoServicioServiceImplTest {
     }
 
     @Test
+    @DisplayName("Si se omite numeroCuenta, resuelve automaticamente la unica cuenta de ahorro del cliente")
+    void procesarPagoServicio_sinNumeroCuenta_resuelveUnicaCuentaAhorro() {
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
+
+        Cuenta cuentaAhorro = new Cuenta();
+        cuentaAhorro.setId(1L);
+        cuentaAhorro.setNumeroCuenta("1234567890");
+        cuentaAhorro.setTipoCuenta(TipoCuenta.AHORRO);
+        cuentaAhorro.setEstatus(EstatusCuenta.ACTIVA);
+        cuentaAhorro.setCliente(cliente);
+        when(cuentaRepository.findByClienteId(10L)).thenReturn(Optional.of(cuentaAhorro));
+        when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
+
+        TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
+        GestoPagoTxResult aprobado = GestoPagoTxResult.builder()
+                .estado(EstadoProveedor.APROBADA)
+                .codigo("01")
+                .mensaje("OK")
+                .build();
+        when(gestoPagoSendTxService.ejecutarTransaccion(any())).thenReturn(aprobado);
+        when(persistenceService.confirmarExito(1L, aprobado)).thenReturn(transaccionMock(EstatusTransaccion.EXITOSA));
+
+        SendTxRequest req = SendTxRequest.builder()
+                .idServicio(2284)
+                .idProducto(14302)
+                .montoPago(new BigDecimal("100.00"))
+                .telefono("5512345678")
+                .build();
+
+        PagoServicioResponse resp = servicio.procesarPagoServicio(req, null);
+        assertEquals("1234567890", resp.getNumeroCuenta());
+        verify(cuentaRepository).findByClienteId(10L);
+    }
+
+    @Test
+    @DisplayName("ROLE_ADMIN no puede realizar compras de servicios (403 AccessDeniedException)")
+    void procesarPagoServicio_adminBloqueado_lanzaAccessDenied() {
+        Usuario admin = new Usuario();
+        admin.setId(99L);
+        admin.setCorreo("admin@banco.com");
+        admin.setRol(AuthenticatedUserService.ROLE_ADMIN);
+        admin.setActivo(true);
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esCliente(admin)).thenReturn(false);
+
+        SendTxRequest req = SendTxRequest.builder()
+                .idServicio(2284)
+                .idProducto(14302)
+                .montoPago(new BigDecimal("100.00"))
+                .telefono("5512345678")
+                .build();
+
+        assertThrows(AccessDeniedException.class, () -> servicio.procesarPagoServicio(req, null));
+        verify(persistenceService, never()).reservarYDebitarSaldo(any());
+    }
+
+    @Test
     @DisplayName("Bloquea manipulacion de monto cuando no coincide con el precio del producto en catalogo")
     void procesarPagoServicio_montoManipulado_rechazaAntesDeDebitar() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
 
         SendTxRequest req = SendTxRequest.builder()
@@ -167,20 +214,18 @@ class PagoServicioServiceImplTest {
                 .build();
 
         assertThrows(ReglaNegocioException.class, () -> servicio.procesarPagoServicio(req, null));
-        verify(persistenceService, never()).reservarYDebitarSaldo(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(persistenceService, never()).reservarYDebitarSaldo(any());
         verify(gestoPagoSendTxService, never()).ejecutarTransaccion(any());
     }
 
     @Test
     @DisplayName("Rechazo explicito del proveedor reversa el saldo del cliente automaticamente")
     void procesarPagoServicio_rechazoProveedor_reversaSaldo() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                anyLong(), anyString(), anyString(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult rechazado = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.RECHAZADA_PROVEEDOR)
@@ -205,12 +250,11 @@ class PagoServicioServiceImplTest {
     @Test
     @DisplayName("Timeout en sendTx NO reintenta el cargo: consulta conciliacion y mantiene PENDIENTE_CONCILIACION si sigue indeterminado")
     void procesarPagoServicio_timeout_noReintentaCargoYMarcaConciliacion() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
         TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
-        when(persistenceService.reservarYDebitarSaldo(
-                anyLong(), anyString(), anyString(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(enProceso);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
 
         GestoPagoTxResult timeoutResult = GestoPagoTxResult.builder()
                 .estado(EstadoProveedor.PENDIENTE_PROVEEDOR)
@@ -248,7 +292,8 @@ class PagoServicioServiceImplTest {
     @Test
     @DisplayName("Idempotency-Key repetida retorna la operacion exitosa previa sin volver a cobrar ni llamar al proveedor")
     void procesarPagoServicio_claveIdempotenteRepetida_noCobraDoble() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         TransaccionServicio previa = transaccionMock(EstatusTransaccion.EXITOSA);
         previa.setCliente(cliente);
         previa.setFolioProveedor("TX-111");
@@ -266,15 +311,15 @@ class PagoServicioServiceImplTest {
 
         assertTrue(resp.getRespuestaIdempotente());
         assertEquals("TX-111", resp.getFolioProveedor());
-        verify(persistenceService, never()).reservarYDebitarSaldo(
-                any(), any(), any(), any(), any(), any(), any(), any(), any());
+        verify(persistenceService, never()).reservarYDebitarSaldo(any());
         verify(gestoPagoSendTxService, never()).ejecutarTransaccion(any());
     }
 
     @Test
     @DisplayName("Idempotency-Key reutilizada con monto distinto lanza DuplicateResourceException (409)")
     void procesarPagoServicio_idempotencyKeyParametrosDistintos_lanzaConflicto() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         TransaccionServicio previa = transaccionMock(EstatusTransaccion.EXITOSA);
         previa.setCliente(cliente);
         when(persistenceService.buscarPorClaveIdempotencia("idem-unica-001")).thenReturn(Optional.of(previa));
@@ -294,7 +339,7 @@ class PagoServicioServiceImplTest {
     @Test
     @DisplayName("Conciliacion confirma rechazo del proveedor y restituye el saldo (REVERSADA)")
     void conciliarTransaccion_proveedorConfirmaNoAplicada_reversaSaldo() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
         TransaccionServicio pendiente = transaccionMock(EstatusTransaccion.PENDIENTE_CONCILIACION);
         pendiente.setCliente(cliente);
         when(transaccionRepository.findByUpc("9988776655")).thenReturn(Optional.of(pendiente));
@@ -321,22 +366,21 @@ class PagoServicioServiceImplTest {
     @DisplayName("Historial paginado con filtro de fechas devuelve PageResponse correctamente")
     @SuppressWarnings("unchecked")
     void obtenerHistorialCompras_paginadoConFechas_exito() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
         TransaccionServicio tx = transaccionMock(EstatusTransaccion.EXITOSA);
         tx.setFechaCreacion(LocalDateTime.of(2026, 10, 15, 14, 30));
 
         when(transaccionRepository.findAll(any(Specification.class), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(tx)));
 
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "fechaCreacion"));
         PageResponse<HistorialCompraResponse> page = servicio.obtenerHistorialCompras(
                 LocalDate.of(2026, 10, 1),
                 LocalDate.of(2026, 10, 31),
                 null,
                 EstatusTransaccion.EXITOSA,
-                0,
-                10,
-                "fechaCreacion",
-                "DESC"
+                pageable
         );
 
         assertNotNull(page);
@@ -347,12 +391,14 @@ class PagoServicioServiceImplTest {
     @Test
     @DisplayName("Historial rechaza rango de fechas invertido y acceso a cuenta de otro cliente")
     void obtenerHistorialCompras_validacionesFechasYTitularidad() {
-        when(usuarioRepository.findWithClienteByCorreo("cliente@banco.com")).thenReturn(Optional.of(usuarioCliente));
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
 
+        Pageable pageable = PageRequest.of(0, 10, Sort.by(Sort.Direction.DESC, "fechaCreacion"));
         assertThrows(ReglaNegocioException.class, () -> servicio.obtenerHistorialCompras(
                 LocalDate.of(2026, 10, 30),
                 LocalDate.of(2026, 10, 1),
-                null, null, 0, 10, "fechaCreacion", "DESC"
+                null, null, pageable
         ));
 
         Cliente otro = new Cliente();
@@ -364,8 +410,59 @@ class PagoServicioServiceImplTest {
         when(cuentaRepository.findWithClienteByNumeroCuenta("9999999999")).thenReturn(Optional.of(cuentaAjena));
 
         assertThrows(AccessDeniedException.class, () -> servicio.obtenerHistorialCompras(
-                null, null, "9999999999", null, 0, 10, "fechaCreacion", "DESC"
+                null, null, "9999999999", null, pageable
         ));
+    }
+
+    @Test
+    @DisplayName("Idempotency-Key reutilizada con telefono o referencia distintos lanza DuplicateResourceException (409)")
+    void procesarPagoServicio_idempotencyKeyTelefonoOReferenciaDistintos_lanzaConflicto() {
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
+        TransaccionServicio previa = transaccionMock(EstatusTransaccion.EXITOSA);
+        previa.setCliente(cliente);
+        previa.setTelefono("5512345678");
+        when(persistenceService.buscarPorClaveIdempotencia("idem-unica-002")).thenReturn(Optional.of(previa));
+
+        SendTxRequest reqOtroTel = SendTxRequest.builder()
+                .numeroCuenta("1234567890")
+                .idServicio(2284)
+                .idProducto(14302)
+                .montoPago(new BigDecimal("100.00"))
+                .telefono("5599887766")
+                .build();
+
+        assertThrows(DuplicateResourceException.class,
+                () -> servicio.procesarPagoServicio(reqOtroTel, "idem-unica-002"));
+    }
+
+    @Test
+    @DisplayName("Job programado de conciliacion rescata transacciones huerfanas en EN_PROCESO")
+    void ejecutarJobConciliacionPendientes_rescataHuerfanasEnProceso() {
+        ReflectionTestUtils.setField(servicio, "enProcesoTimeoutMinutes", 3L);
+        TransaccionServicio huerfana = transaccionMock(EstatusTransaccion.EN_PROCESO);
+        huerfana.setCliente(cliente);
+
+        when(transaccionRepository.findTop20ByEstatusAndFechaCreacionBeforeOrderByFechaCreacionAsc(
+                eq(EstatusTransaccion.EN_PROCESO), any(LocalDateTime.class)))
+                .thenReturn(List.of(huerfana));
+        when(transaccionRepository.findTop20ByEstatusAndIntentosConciliacionLessThanOrderByFechaCreacionAsc(
+                EstatusTransaccion.PENDIENTE_CONCILIACION, 5))
+                .thenReturn(List.of());
+
+        GestoPagoTxResult aprobada = GestoPagoTxResult.builder()
+                .estado(EstadoProveedor.APROBADA)
+                .codigo("01")
+                .mensaje("Aplicada")
+                .idTx("TX-RESCATE")
+                .build();
+        when(gestoPagoSendTxService.verificarTransaccion(any())).thenReturn(aprobada);
+        when(persistenceService.confirmarExito(1L, aprobada)).thenReturn(transaccionMock(EstatusTransaccion.EXITOSA));
+
+        servicio.ejecutarJobConciliacionPendientes();
+
+        verify(gestoPagoSendTxService, times(1)).verificarTransaccion(any());
+        verify(persistenceService, times(1)).confirmarExito(1L, aprobada);
     }
 
     private static CatalogoProducto productoRecargaFija(String precio) {

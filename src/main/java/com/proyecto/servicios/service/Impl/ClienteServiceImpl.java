@@ -5,9 +5,12 @@ import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.clientes.DomicilioCliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
+import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.mapper.ClienteMapper;
 import com.proyecto.servicios.mapper.DomicilioClienteMapper;
@@ -19,11 +22,15 @@ import com.proyecto.servicios.repositorys.catalogos.*;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.clientes.DomicilioClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.ClienteService;
 import jakarta.persistence.criteria.Predicate;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.jpa.domain.Specification;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,12 +39,15 @@ import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.LocalDate;
 import java.time.Period;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
 @Service
 @Slf4j
 public class ClienteServiceImpl implements ClienteService {
+
+    private static final String CLIENTE_NO_ENCONTRADO = "Cliente activo no encontrado con ID: ";
 
     private final ClienteRepository clienteRepository;
     private final DomicilioClienteRepository domicilioClienteRepository;
@@ -55,6 +65,9 @@ public class ClienteServiceImpl implements ClienteService {
     private final ClienteMapper clienteMapper;
     private final DomicilioClienteMapper domicilioClienteMapper;
     private final PasswordEncoder passwordEncoder;
+    private final AuthenticatedUserService authenticatedUserService;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final TransaccionServicioRepository transaccionServicioRepository;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -72,7 +85,10 @@ public class ClienteServiceImpl implements ClienteService {
             CatalogoPaisRepository paisRepository,
             ClienteMapper clienteMapper,
             DomicilioClienteMapper domicilioClienteMapper,
-            PasswordEncoder passwordEncoder) {
+            PasswordEncoder passwordEncoder,
+            AuthenticatedUserService authenticatedUserService,
+            RefreshTokenRepository refreshTokenRepository,
+            TransaccionServicioRepository transaccionServicioRepository) {
         this.clienteRepository = clienteRepository;
         this.domicilioClienteRepository = domicilioClienteRepository;
         this.cuentaRepository = cuentaRepository;
@@ -87,6 +103,9 @@ public class ClienteServiceImpl implements ClienteService {
         this.clienteMapper = clienteMapper;
         this.domicilioClienteMapper = domicilioClienteMapper;
         this.passwordEncoder = passwordEncoder;
+        this.authenticatedUserService = authenticatedUserService;
+        this.refreshTokenRepository = refreshTokenRepository;
+        this.transaccionServicioRepository = transaccionServicioRepository;
     }
 
     @Override
@@ -143,6 +162,7 @@ public class ClienteServiceImpl implements ClienteService {
                 .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
         CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
                 .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
+        validarJerarquiaDomicilio(colonia, municipio, estado, pais);
 
         DomicilioCliente domicilio = domicilioClienteMapper.toEntity(domDto);
         domicilio.setCliente(clienteGuardado);
@@ -155,26 +175,27 @@ public class ClienteServiceImpl implements ClienteService {
         clienteGuardado.setDomicilio(domicilioGuardado);
         log.info("Paso 2/4 exitoso: Domicilio persistido con ID {}", domicilioGuardado.getId());
 
-        // 6. Paso 3: Crear Cuenta Bancaria inicial automatica (Estatus ACTIVA)
+        // 6. Paso 3: Crear Cuenta de Ahorro unica inicial (Estatus PENDIENTE_REVISION para onboarding)
         BigDecimal saldoInicial = (request.getSaldoInicial() != null) ? request.getSaldoInicial() : BigDecimal.ZERO;
         String numeroCuenta = generarNumeroCuentaUnico();
 
         Cuenta cuenta = new Cuenta();
         cuenta.setCliente(clienteGuardado);
+        cuenta.setTipoCuenta(TipoCuenta.AHORRO);
         cuenta.setNumeroCuenta(numeroCuenta);
         cuenta.setSaldo(saldoInicial);
-        cuenta.setEstatus(EstatusCuenta.ACTIVA);
+        cuenta.setEstatus(EstatusCuenta.PENDIENTE_REVISION);
 
         Cuenta cuentaGuardada = cuentaRepository.save(cuenta);
-        clienteGuardado.getCuentas().add(cuentaGuardada);
-        log.info("Paso 3/4 exitoso: Cuenta bancaria creada con numero {} y saldo inicial {}", numeroCuenta, saldoInicial);
+        clienteGuardado.setCuenta(cuentaGuardada);
+        log.info("Paso 3/4 exitoso: Cuenta de ahorro {} creada en PENDIENTE_REVISION con saldo {}", numeroCuenta, saldoInicial);
 
         // 7. Paso 4: Crear Usuario de Acceso automatico (Password BCrypt)
         Usuario usuario = new Usuario();
         usuario.setCliente(clienteGuardado);
         usuario.setCorreo(correo);
         usuario.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-        usuario.setRol("ROLE_CLIENTE");
+        usuario.setRol(AuthenticatedUserService.ROLE_CLIENTE);
         usuario.setActivo(true);
 
         Usuario usuarioGuardado = usuarioRepository.save(usuario);
@@ -183,15 +204,29 @@ public class ClienteServiceImpl implements ClienteService {
 
         ClienteResponse response = clienteMapper.toResponse(clienteGuardado);
         response.setCodigo(0);
-        response.setMensaje("Cliente, domicilio, cuenta bancaria inicial y usuario de acceso registrados exitosamente");
+        response.setMensaje("Cliente, domicilio, cuenta de ahorro unica (pendiente de revision) y usuario registrados exitosamente");
+        return response;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ClienteResponse obtenerMiPerfil() {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esCliente(usuario) || usuario.getCliente() == null) {
+            throw new AccessDeniedException("Solo un cliente con perfil asociado puede consultar su perfil de cliente.");
+        }
+        Cliente cliente = buscarClienteActivo(usuario.getCliente().getId());
+        ClienteResponse response = clienteMapper.toResponse(cliente);
+        response.setCodigo(0);
+        response.setMensaje("Consulta exitosa");
         return response;
     }
 
     @Override
     @Transactional(readOnly = true)
     public ClienteResponse obtenerPorId(Long id) {
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        validarAccesoCliente(id);
+        Cliente cliente = buscarClienteActivo(id);
         ClienteResponse response = clienteMapper.toResponse(cliente);
         response.setCodigo(0);
         response.setMensaje("Consulta exitosa");
@@ -208,28 +243,21 @@ public class ClienteServiceImpl implements ClienteService {
             String rfc,
             String correo) {
 
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esAdmin(usuario)) {
+            throw new AccessDeniedException("Solo un administrador puede consultar el listado general de clientes.");
+        }
+
         Specification<Cliente> spec = (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
             predicates.add(cb.isTrue(root.get("activo")));
 
-            if (nombre != null && !nombre.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("nombre")), "%" + nombre.trim().toLowerCase() + "%"));
-            }
-            if (apellidoPaterno != null && !apellidoPaterno.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("apellidoPaterno")), "%" + apellidoPaterno.trim().toLowerCase() + "%"));
-            }
-            if (apellidoMaterno != null && !apellidoMaterno.isBlank()) {
-                predicates.add(cb.like(cb.lower(root.get("apellidoMaterno")), "%" + apellidoMaterno.trim().toLowerCase() + "%"));
-            }
-            if (curp != null && !curp.isBlank()) {
-                predicates.add(cb.equal(cb.upper(root.get("curp")), curp.trim().toUpperCase()));
-            }
-            if (rfc != null && !rfc.isBlank()) {
-                predicates.add(cb.equal(cb.upper(root.get("rfc")), rfc.trim().toUpperCase()));
-            }
-            if (correo != null && !correo.isBlank()) {
-                predicates.add(cb.equal(cb.lower(root.get("correo")), correo.trim().toLowerCase()));
-            }
+            agregarFiltroLike(predicates, cb, root.get("nombre"), nombre);
+            agregarFiltroLike(predicates, cb, root.get("apellidoPaterno"), apellidoPaterno);
+            agregarFiltroLike(predicates, cb, root.get("apellidoMaterno"), apellidoMaterno);
+            agregarFiltroEqual(predicates, cb, root.get("curp"), curp, true);
+            agregarFiltroEqual(predicates, cb, root.get("rfc"), rfc, true);
+            agregarFiltroEqual(predicates, cb, root.get("correo"), correo, false);
 
             return cb.and(predicates.toArray(new Predicate[0]));
         };
@@ -238,32 +266,68 @@ public class ClienteServiceImpl implements ClienteService {
         return clienteMapper.toResponses(clientes);
     }
 
+    private void agregarFiltroLike(List<Predicate> predicates, jakarta.persistence.criteria.CriteriaBuilder cb,
+                                  jakarta.persistence.criteria.Expression<String> expr, String valor) {
+        if (valor != null && !valor.isBlank()) {
+            predicates.add(cb.like(cb.lower(expr), "%" + valor.trim().toLowerCase() + "%"));
+        }
+    }
+
+    private void agregarFiltroEqual(List<Predicate> predicates, jakarta.persistence.criteria.CriteriaBuilder cb,
+                                   jakarta.persistence.criteria.Expression<String> expr, String valor, boolean toUpper) {
+        if (valor != null && !valor.isBlank()) {
+            String normalizado = toUpper ? valor.trim().toUpperCase() : valor.trim().toLowerCase();
+            predicates.add(cb.equal(toUpper ? cb.upper(expr) : cb.lower(expr), normalizado));
+        }
+    }
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ClienteResponse actualizar(Long id, ClienteUpdateRequest request) {
+        validarAccesoCliente(id);
         log.info("Actualizando informacion permitida para el cliente con ID: {}", id);
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        Cliente cliente = buscarClienteActivo(id);
 
-        // Actualizacion parcial: solo se validan/actualizan los campos enviados (no nulos)
         if (request.getFechaNacimiento() != null) {
             validarMayoriaDeEdad(request.getFechaNacimiento());
         }
 
-        // Validar unicidad de correo si cambia
-        if (request.getCorreo() != null) {
-            String nuevoCorreo = request.getCorreo().trim().toLowerCase();
-            if (!cliente.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
-                if (clienteRepository.existsByCorreo(nuevoCorreo) || usuarioRepository.existsByCorreo(nuevoCorreo)) {
-                    throw new DuplicateResourceException("El correo electronico ya pertenece a otro cliente/usuario: " + nuevoCorreo);
-                }
-                cliente.setCorreo(nuevoCorreo);
-                if (cliente.getUsuario() != null) {
-                    cliente.getUsuario().setCorreo(nuevoCorreo);
+        actualizarCorreoSiAplica(cliente, request.getCorreo());
+        actualizarCatalogosRelacionados(cliente, request);
+        clienteMapper.updateEntity(request, cliente);
+        actualizarDomicilioCliente(cliente, request.getDomicilio());
+
+        Cliente guardado = clienteRepository.save(cliente);
+        ClienteResponse response = clienteMapper.toResponse(guardado);
+        response.setCodigo(0);
+        response.setMensaje("Cliente actualizado exitosamente");
+        return response;
+    }
+
+    private void actualizarCorreoSiAplica(Cliente cliente, String nuevoCorreoRaw) {
+        if (nuevoCorreoRaw == null || nuevoCorreoRaw.isBlank()) {
+            return;
+        }
+        String nuevoCorreo = nuevoCorreoRaw.trim().toLowerCase();
+        if (!cliente.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
+            if (clienteRepository.existsByCorreoAndIdNot(nuevoCorreo, cliente.getId())
+                    || usuarioRepository.existsByCorreo(nuevoCorreo)) {
+                throw new DuplicateResourceException("El correo electronico ya pertenece a otro cliente/usuario: " + nuevoCorreo);
+            }
+            cliente.setCorreo(nuevoCorreo);
+            Usuario usuario = cliente.getUsuario();
+            if (usuario != null) {
+                usuario.setCorreo(nuevoCorreo);
+                usuario.incrementarTokenVersion();
+                usuarioRepository.save(usuario);
+                if (usuario.getId() != null) {
+                    refreshTokenRepository.revocarTodosPorUsuarioId(usuario.getId());
                 }
             }
         }
+    }
 
+    private void actualizarCatalogosRelacionados(Cliente cliente, ClienteUpdateRequest request) {
         if (request.getGeneroId() != null) {
             CatalogoGeneros genero = generosRepository.findById(request.getGeneroId())
                     .orElseThrow(() -> new CatalogoNotFoundException("Genero no encontrado con id: " + request.getGeneroId()));
@@ -279,78 +343,120 @@ public class ClienteServiceImpl implements ClienteService {
                     .orElseThrow(() -> new CatalogoNotFoundException("Estado civil no encontrado con id: " + request.getEstadoCivilId()));
             cliente.setEstadoCivil(estadoCivil);
         }
+    }
 
-        clienteMapper.updateEntity(request, cliente);
-
-        // Actualizar domicilio si se envio
-        if (request.getDomicilio() != null && cliente.getDomicilio() != null) {
-            DomicilioDTO domDto = request.getDomicilio();
-            CatalogoColonia colonia = coloniaRepository.findById(domDto.getColoniaId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Colonia no encontrada con id: " + domDto.getColoniaId()));
-            CatalogoMunicipio municipio = municipioRepository.findById(domDto.getMunicipioId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Municipio no encontrado con id: " + domDto.getMunicipioId()));
-            CatalogoEstado estado = estadoRepository.findById(domDto.getEstadoId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
-            CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
-                    .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
-
-            domicilioClienteMapper.updateEntity(domDto, cliente.getDomicilio());
-            cliente.getDomicilio().setColonia(colonia);
-            cliente.getDomicilio().setMunicipio(municipio);
-            cliente.getDomicilio().setEstado(estado);
-            cliente.getDomicilio().setPais(pais);
+    private void actualizarDomicilioCliente(Cliente cliente, DomicilioDTO domDto) {
+        if (domDto == null || cliente.getDomicilio() == null) {
+            return;
         }
+        CatalogoColonia colonia = coloniaRepository.findById(domDto.getColoniaId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Colonia no encontrada con id: " + domDto.getColoniaId()));
+        CatalogoMunicipio municipio = municipioRepository.findById(domDto.getMunicipioId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Municipio no encontrado con id: " + domDto.getMunicipioId()));
+        CatalogoEstado estado = estadoRepository.findById(domDto.getEstadoId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
+        CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
+                .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
+        validarJerarquiaDomicilio(colonia, municipio, estado, pais);
 
-        Cliente guardado = clienteRepository.save(cliente);
-        ClienteResponse response = clienteMapper.toResponse(guardado);
-        response.setCodigo(0);
-        response.setMensaje("Cliente actualizado exitosamente");
-        return response;
+        domicilioClienteMapper.updateEntity(domDto, cliente.getDomicilio());
+        cliente.getDomicilio().setColonia(colonia);
+        cliente.getDomicilio().setMunicipio(municipio);
+        cliente.getDomicilio().setEstado(estado);
+        cliente.getDomicilio().setPais(pais);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void darDeBaja(Long id) {
+        Usuario operador = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esAdmin(operador)) {
+            throw new AccessDeniedException("Solo un administrador puede dar de baja a un cliente.");
+        }
+
         log.info("Iniciando baja logica para el cliente con ID: {}", id);
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + id));
+        Cliente cliente = buscarClienteActivo(id);
+
+        if (transaccionServicioRepository.existsByClienteIdAndEstatusIn(
+                id, List.of(EstatusTransaccion.EN_PROCESO, EstatusTransaccion.PENDIENTE_CONCILIACION))) {
+            throw new ReglaNegocioException(
+                    "No es posible dar de baja al cliente porque tiene transacciones de servicios en proceso o pendientes de conciliacion.");
+        }
 
         // 1. Desactivar cliente
         cliente.setActivo(false);
 
-        // 2. Desactivar usuario de acceso asociado
+        // 2. Desactivar usuario de acceso asociado e invalidar tokens activos
         if (cliente.getUsuario() != null) {
             cliente.getUsuario().setActivo(false);
+            cliente.getUsuario().incrementarTokenVersion();
             usuarioRepository.save(cliente.getUsuario());
+            if (cliente.getUsuario().getId() != null) {
+                refreshTokenRepository.revocarTodosPorUsuarioId(cliente.getUsuario().getId());
+            }
             log.info("Usuario de acceso ID {} desactivado por baja logica de cliente", cliente.getUsuario().getId());
         }
 
-        // 3. Inactivar cuentas bancarias asociadas
-        if (cliente.getCuentas() != null) {
-            for (Cuenta cuenta : cliente.getCuentas()) {
-                if (cuenta.getEstatus() == EstatusCuenta.ACTIVA) {
-                    cuenta.setEstatus(EstatusCuenta.INACTIVA);
-                    cuentaRepository.save(cuenta);
-                    log.info("Cuenta bancaria {} inactivada por baja logica de cliente", cuenta.getNumeroCuenta());
-                }
-            }
+        // 3. Inactivar su unica cuenta de ahorro si no esta cancelada ni rechazada
+        Cuenta cuenta = cliente.getCuenta();
+        if (cuenta != null
+                && cuenta.getEstatus() != EstatusCuenta.CANCELADA
+                && cuenta.getEstatus() != EstatusCuenta.RECHAZADA
+                && cuenta.getEstatus() != EstatusCuenta.INACTIVA) {
+            cuenta.setEstatus(EstatusCuenta.INACTIVA);
+            cuentaRepository.save(cuenta);
+            log.info("Cuenta de ahorro {} inactivada por baja logica de cliente", cuenta.getNumeroCuenta());
         }
 
         clienteRepository.save(cliente);
         log.info("Baja logica del cliente ID {} completada exitosamente", id);
     }
 
+    private void validarAccesoCliente(Long clienteIdSolicitado) {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (authenticatedUserService.esAdmin(usuario)) {
+            return;
+        }
+        if (usuario.getCliente() == null || !usuario.getCliente().getId().equals(clienteIdSolicitado)) {
+            throw new AccessDeniedException("No tiene autorizacion para consultar o modificar informacion de otro cliente.");
+        }
+    }
+
+    private Cliente buscarClienteActivo(Long id) {
+        return clienteRepository.findByIdAndActivoTrue(id)
+                .orElseThrow(() -> new ResourceNotFoundException(CLIENTE_NO_ENCONTRADO + id));
+    }
+
     private void validarMayoriaDeEdad(LocalDate fechaNacimiento) {
         if (fechaNacimiento == null) {
             throw new IllegalArgumentException("La fecha de nacimiento es obligatoria");
         }
-        LocalDate hoy = LocalDate.now();
+        LocalDate hoy = LocalDate.now(ZoneId.systemDefault());
         if (fechaNacimiento.isAfter(hoy)) {
             throw new IllegalArgumentException("La fecha de nacimiento no puede ser futura");
         }
         int edad = Period.between(fechaNacimiento, hoy).getYears();
         if (edad < 18) {
             throw new IllegalArgumentException("El cliente debe ser mayor de edad (minimo 18 anos). Edad calculada: " + edad + " anos");
+        }
+    }
+
+    private void validarJerarquiaDomicilio(
+            CatalogoColonia colonia,
+            CatalogoMunicipio municipio,
+            CatalogoEstado estado,
+            CatalogoPais pais) {
+        if (colonia.getCatalogoMunicipio() == null
+                || !municipio.getId().equals(colonia.getCatalogoMunicipio().getId())) {
+            throw new ReglaNegocioException("La colonia seleccionada no pertenece al municipio indicado.");
+        }
+        if (municipio.getCatalogoEstado() == null
+                || !estado.getId().equals(municipio.getCatalogoEstado().getId())) {
+            throw new ReglaNegocioException("El municipio seleccionado no pertenece al estado indicado.");
+        }
+        if (estado.getCatalogoPais() == null
+                || !pais.getId().equals(estado.getCatalogoPais().getId())) {
+            throw new ReglaNegocioException("El estado seleccionado no pertenece al pais indicado.");
         }
     }
 

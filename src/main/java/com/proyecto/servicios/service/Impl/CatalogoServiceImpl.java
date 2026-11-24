@@ -11,6 +11,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.UUID;
 
 @Service
 @Slf4j
@@ -30,12 +31,21 @@ public class CatalogoServiceImpl implements CatalogoService {
         }
 
         List<Producto> productos = response.getProductos().getProductos();
-        catalogoProductoRepository.deleteAll();
+        if (productos.isEmpty()) {
+            throw new IllegalArgumentException("El catalogo a persistir no puede estar vacio");
+        }
+
         List<CatalogoProducto> documentos = productos.stream()
                 .map(this::aDocumento)
                 .toList();
+        List<String> idsActuales = documentos.stream()
+                .map(CatalogoProducto::getId)
+                .distinct()
+                .toList();
+
         catalogoProductoRepository.saveAll(documentos);
-        log.info("Catalogo GestoPago persistido en MongoDB ({} productos)", documentos.size());
+        catalogoProductoRepository.deleteByIdNotIn(idsActuales);
+        log.info("Catalogo GestoPago actualizado sin ventana vacia en MongoDB ({} productos)", documentos.size());
     }
 
     @Override
@@ -65,6 +75,7 @@ public class CatalogoServiceImpl implements CatalogoService {
 
     private CatalogoProducto aDocumento(Producto producto) {
         CatalogoProducto documento = new CatalogoProducto();
+        documento.setId(construirIdCompuesto(producto.getIdServicio(), producto.getIdProducto()));
         documento.setServicio(producto.getServicio());
         documento.setNombreProducto(producto.getNombreProducto());
         documento.setIdServicio(producto.getIdServicio());
@@ -77,5 +88,12 @@ public class CatalogoServiceImpl implements CatalogoService {
         documento.setTipoReferencia(producto.getTipoReferencia());
         documento.setLegend(producto.getLegend());
         return documento;
+    }
+
+    private static String construirIdCompuesto(String idServicio, String idProducto) {
+        if (idServicio != null && !idServicio.isBlank() && idProducto != null && !idProducto.isBlank()) {
+            return idServicio.trim() + ":" + idProducto.trim();
+        }
+        return UUID.randomUUID().toString();
     }
 }

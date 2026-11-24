@@ -22,6 +22,7 @@ import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "transacciones_servicio")
@@ -110,7 +111,7 @@ public class TransaccionServicio {
     @PrePersist
     public void prePersist() {
         if (this.fechaCreacion == null) {
-            this.fechaCreacion = LocalDateTime.now();
+            this.fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
         }
         if (this.intentosConciliacion == null) {
             this.intentosConciliacion = 0;
@@ -119,7 +120,7 @@ public class TransaccionServicio {
 
     @PreUpdate
     public void preUpdate() {
-        this.fechaActualizacion = LocalDateTime.now();
+        this.fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }
 

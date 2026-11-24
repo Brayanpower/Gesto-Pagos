@@ -6,6 +6,8 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.HistorialCompraRes
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.PagoServicioResponse;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
 
+import org.springframework.data.domain.Pageable;
+
 import java.time.LocalDate;
 
 public interface PagoServicioService {
@@ -21,9 +23,6 @@ public interface PagoServicioService {
             LocalDate fechaFin,
             String numeroCuenta,
             EstatusTransaccion estatus,
-            int page,
-            int size,
-            String sortBy,
-            String sortDir);
+            Pageable pageable);
 }
 

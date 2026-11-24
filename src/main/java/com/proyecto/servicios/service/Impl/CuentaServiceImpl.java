@@ -1,22 +1,26 @@
 package com.proyecto.servicios.service.Impl;
 
-import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
+import com.proyecto.servicios.entity.seguridad.Usuario;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.mapper.CuentaMapper;
 import com.proyecto.servicios.model.banco.CuentaActualizacionRequest;
-import com.proyecto.servicios.model.banco.CuentaCreacionRequest;
 import com.proyecto.servicios.model.banco.CuentaResponse;
-import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.CuentaService;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.security.SecureRandom;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 
 @Service
@@ -24,85 +28,121 @@ import java.util.List;
 public class CuentaServiceImpl implements CuentaService {
 
     private final CuentaRepository cuentaRepository;
-    private final ClienteRepository clienteRepository;
     private final CuentaMapper cuentaMapper;
-    private final SecureRandom secureRandom = new SecureRandom();
+    private final AuthenticatedUserService authenticatedUserService;
+    private final TransaccionServicioRepository transaccionServicioRepository;
 
     public CuentaServiceImpl(
             CuentaRepository cuentaRepository,
-            ClienteRepository clienteRepository,
-            CuentaMapper cuentaMapper) {
+            CuentaMapper cuentaMapper,
+            AuthenticatedUserService authenticatedUserService,
+            TransaccionServicioRepository transaccionServicioRepository) {
         this.cuentaRepository = cuentaRepository;
-        this.clienteRepository = clienteRepository;
         this.cuentaMapper = cuentaMapper;
+        this.authenticatedUserService = authenticatedUserService;
+        this.transaccionServicioRepository = transaccionServicioRepository;
     }
 
     @Override
-    @Transactional
-    public CuentaResponse crearCuenta(CuentaCreacionRequest request) {
-        log.info("Creando nueva cuenta bancaria para el cliente ID: {}", request.getClienteId());
-
-        Cliente cliente = clienteRepository.findByIdAndActivoTrue(request.getClienteId())
-                .orElseThrow(() -> new ResourceNotFoundException("Cliente activo no encontrado con ID: " + request.getClienteId()));
-
-        BigDecimal saldoInicial = (request.getSaldoInicial() != null) ? request.getSaldoInicial() : BigDecimal.ZERO;
-        if (saldoInicial.compareTo(BigDecimal.ZERO) < 0) {
-            throw new IllegalArgumentException("El saldo inicial no puede ser negativo");
+    @Transactional(readOnly = true)
+    public CuentaResponse obtenerMiCuenta() {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esCliente(usuario) || usuario.getCliente() == null) {
+            throw new AccessDeniedException("Solo un cliente tiene una cuenta de ahorro asociada.");
         }
-
-        String numeroCuenta = generarNumeroCuentaUnico();
-
-        Cuenta cuenta = new Cuenta();
-        cuenta.setCliente(cliente);
-        cuenta.setNumeroCuenta(numeroCuenta);
-        cuenta.setSaldo(saldoInicial);
-        cuenta.setEstatus(EstatusCuenta.ACTIVA);
-
-        Cuenta guardada = cuentaRepository.save(cuenta);
-        log.info("Cuenta bancaria {} creada exitosamente para cliente {}", numeroCuenta, cliente.getId());
-
-        return cuentaMapper.toResponse(guardada);
+        Cuenta cuenta = cuentaRepository.findByClienteId(usuario.getCliente().getId())
+                .orElseThrow(() -> new ResourceNotFoundException("El cliente no tiene una cuenta de ahorro registrada."));
+        return cuentaMapper.toResponse(cuenta);
     }
 
     @Override
     @Transactional(readOnly = true)
     public CuentaResponse obtenerPorNumeroCuenta(String numeroCuenta) {
-        Cuenta cuenta = buscar(numeroCuenta);
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        Cuenta cuenta = buscarConCliente(numeroCuenta);
+        validarAccesoCuenta(usuario, cuenta);
         return cuentaMapper.toResponse(cuenta);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<CuentaResponse> obtenerPorClienteId(Long clienteId) {
-        return cuentaMapper.toResponses(cuentaRepository.findByClienteId(clienteId));
+        exigirRolAdmin("Solo un administrador puede consultar cuentas por clienteId.");
+        return cuentaRepository.findByClienteId(clienteId)
+                .map(cuenta -> List.of(cuentaMapper.toResponse(cuenta)))
+                .orElseGet(List::of);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<CuentaResponse> obtenerPorEstatus(EstatusCuenta estatus) {
+        exigirRolAdmin("Solo un administrador puede filtrar todas las cuentas por estatus.");
         return cuentaMapper.toResponses(cuentaRepository.findByEstatus(estatus));
     }
 
     @Override
     @Transactional(readOnly = true)
+    public List<CuentaResponse> obtenerPendientesRevision() {
+        exigirRolAdmin("Solo un administrador puede consultar la bandeja de cuentas de onboarding.");
+        return cuentaMapper.toResponses(
+                cuentaRepository.findByEstatusOrderByFechaCreacionAsc(EstatusCuenta.PENDIENTE_REVISION));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<CuentaResponse> listarTodas() {
+        exigirRolAdmin("Solo un administrador puede listar todas las cuentas bancarias.");
         return cuentaMapper.toResponses(cuentaRepository.findAll());
     }
 
     @Override
     @Transactional
-    public CuentaResponse actualizarEstatus(String numeroCuenta, CuentaActualizacionRequest request) {
-        log.info("Actualizando estatus de cuenta {} a {}", numeroCuenta, request.getEstatus());
-        Cuenta cuenta = buscar(numeroCuenta);
+    public CuentaResponse revisarCuenta(String numeroCuenta, CuentaActualizacionRequest request) {
+        Usuario admin = exigirRolAdmin("Solo un administrador puede revisar y dictaminar cuentas de onboarding.");
+        log.info("Revision de cuenta {} a estatus {} por admin {}", numeroCuenta, request.getEstatus(), admin.getCorreo());
 
-        // Regla de negocio: solo un cliente activo puede tener cuentas activas
+        if (request.getEstatus() == EstatusCuenta.PENDIENTE_REVISION) {
+            throw new ReglaNegocioException("No se puede asignar manualmente el estatus PENDIENTE_REVISION.");
+        }
+
+        Cuenta cuenta = buscarConCliente(numeroCuenta);
+        if (cuenta.getEstatus() == EstatusCuenta.CANCELADA && request.getEstatus() != EstatusCuenta.CANCELADA) {
+            throw new ReglaNegocioException("Una cuenta cancelada no puede cambiar de estatus.");
+        }
+
+        if (request.getEstatus() == EstatusCuenta.RECHAZADA) {
+            if (cuenta.getEstatus() != EstatusCuenta.PENDIENTE_REVISION) {
+                throw new ReglaNegocioException(
+                        "Solo se puede rechazar una cuenta que se encuentre en estatus PENDIENTE_REVISION.");
+            }
+            if (request.getObservacionRevision() == null || request.getObservacionRevision().isBlank()) {
+                throw new ReglaNegocioException(
+                        "Debe indicar una observacion o motivo al rechazar una cuenta de onboarding.");
+            }
+        }
+
+        if (request.getEstatus() == EstatusCuenta.CANCELADA
+                && transaccionServicioRepository.existsByCuentaIdAndEstatusIn(
+                        cuenta.getId(),
+                        List.of(EstatusTransaccion.EN_PROCESO, EstatusTransaccion.PENDIENTE_CONCILIACION))) {
+            throw new ReglaNegocioException(
+                    "No es posible cancelar una cuenta con transacciones en proceso o pendientes de conciliacion.");
+        }
+
         if (request.getEstatus() == EstatusCuenta.ACTIVA
                 && (cuenta.getCliente() == null || !cuenta.getCliente().isActivo())) {
-            throw new IllegalArgumentException(
+            throw new ReglaNegocioException(
                     "No se puede activar la cuenta porque el cliente titular no esta activo");
         }
 
         cuenta.setEstatus(request.getEstatus());
+        cuenta.setRevisadoPor(admin.getCorreo());
+        if (request.getObservacionRevision() != null) {
+            String obs = request.getObservacionRevision().trim();
+            cuenta.setObservacionRevision(obs.isEmpty() ? null : obs);
+        }
+        cuenta.setFechaRevision(LocalDateTime.now(ZoneId.systemDefault()));
+
         Cuenta actualizada = cuentaRepository.save(cuenta);
         return cuentaMapper.toResponse(actualizada);
     }
@@ -110,21 +150,33 @@ public class CuentaServiceImpl implements CuentaService {
     @Override
     @Transactional(readOnly = true)
     public BigDecimal consultarSaldo(String numeroCuenta) {
-        Cuenta cuenta = buscar(numeroCuenta);
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        Cuenta cuenta = buscarConCliente(numeroCuenta);
+        validarAccesoCuenta(usuario, cuenta);
         return cuenta.getSaldo();
     }
 
-    private Cuenta buscar(String numeroCuenta) {
-        return cuentaRepository.findByNumeroCuenta(numeroCuenta.trim())
+    private Cuenta buscarConCliente(String numeroCuenta) {
+        return cuentaRepository.findWithClienteByNumeroCuenta(numeroCuenta.trim())
                 .orElseThrow(() -> new ResourceNotFoundException("No se encontro la cuenta bancaria: " + numeroCuenta));
     }
 
-    private String generarNumeroCuentaUnico() {
-        String numeroCuenta;
-        do {
-            long numero = 1000000000L + (long) (secureRandom.nextDouble() * 9000000000L);
-            numeroCuenta = String.valueOf(numero);
-        } while (cuentaRepository.existsByNumeroCuenta(numeroCuenta));
-        return numeroCuenta;
+    private Usuario exigirRolAdmin(String mensajeError) {
+        Usuario usuario = authenticatedUserService.obtenerUsuarioAutenticadoActivo();
+        if (!authenticatedUserService.esAdmin(usuario)) {
+            throw new AccessDeniedException(mensajeError);
+        }
+        return usuario;
+    }
+
+    private void validarAccesoCuenta(Usuario usuario, Cuenta cuenta) {
+        if (authenticatedUserService.esAdmin(usuario)) {
+            return;
+        }
+        if (usuario.getCliente() == null
+                || cuenta.getCliente() == null
+                || !usuario.getCliente().getId().equals(cuenta.getCliente().getId())) {
+            throw new AccessDeniedException("No tiene autorizacion para consultar una cuenta que no le pertenece.");
+        }
     }
 }

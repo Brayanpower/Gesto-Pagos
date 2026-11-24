@@ -11,9 +11,11 @@ import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.clientes.DomicilioCliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.mapper.ClienteMapper;
 import com.proyecto.servicios.mapper.DomicilioClienteMapper;
@@ -31,7 +33,10 @@ import com.proyecto.servicios.repositorys.catalogos.CatalogoPaisRepository;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.clientes.DomicilioClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
+import com.proyecto.servicios.security.AuthenticatedUserService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,17 +44,17 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -76,12 +81,15 @@ class ClienteServiceImplTest {
     @Mock private ClienteMapper clienteMapper;
     @Mock private DomicilioClienteMapper domicilioClienteMapper;
     @Mock private PasswordEncoder passwordEncoder;
+    @Mock private AuthenticatedUserService authenticatedUserService;
+    @Mock private RefreshTokenRepository refreshTokenRepository;
+    @Mock private TransaccionServicioRepository transaccionServicioRepository;
 
     @InjectMocks
     private ClienteServiceImpl servicio;
 
     @Test
-    @DisplayName("Registro exitoso crea cliente, domicilio, cuenta y usuario cifrado")
+    @DisplayName("Onboarding exitoso crea cliente, domicilio, unica cuenta AHORRO en PENDIENTE_REVISION y usuario ROLE_CLIENTE")
     void registrarCliente_exito_creaTodoElFlujo() {
         ClienteRegistroRequest request = requestValido();
 
@@ -98,10 +106,22 @@ class ClienteServiceImplTest {
             c.setId(1L);
             return c;
         });
-        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(new CatalogoColonia()));
-        when(municipioRepository.findById(1L)).thenReturn(Optional.of(new CatalogoMunicipio()));
-        when(estadoRepository.findById(1L)).thenReturn(Optional.of(new CatalogoEstado()));
-        when(paisRepository.findById(1L)).thenReturn(Optional.of(new CatalogoPais()));
+        CatalogoPais pais = new CatalogoPais();
+        pais.setId(1L);
+        CatalogoEstado estado = new CatalogoEstado();
+        estado.setId(1L);
+        estado.setCatalogoPais(pais);
+        CatalogoMunicipio municipio = new CatalogoMunicipio();
+        municipio.setId(1L);
+        municipio.setCatalogoEstado(estado);
+        CatalogoColonia colonia = new CatalogoColonia();
+        colonia.setId(1L);
+        colonia.setCatalogoMunicipio(municipio);
+
+        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(colonia));
+        when(municipioRepository.findById(1L)).thenReturn(Optional.of(municipio));
+        when(estadoRepository.findById(1L)).thenReturn(Optional.of(estado));
+        when(paisRepository.findById(1L)).thenReturn(Optional.of(pais));
         when(domicilioClienteMapper.toEntity(any())).thenReturn(new DomicilioCliente());
         when(domicilioClienteRepository.save(any(DomicilioCliente.class))).thenAnswer(inv -> inv.getArgument(0));
         when(cuentaRepository.existsByNumeroCuenta(anyString())).thenReturn(false);
@@ -118,7 +138,8 @@ class ClienteServiceImplTest {
         ArgumentCaptor<Cuenta> cuentaCaptor = ArgumentCaptor.forClass(Cuenta.class);
         verify(cuentaRepository).save(cuentaCaptor.capture());
         Cuenta cuenta = cuentaCaptor.getValue();
-        assertEquals(EstatusCuenta.ACTIVA, cuenta.getEstatus());
+        assertEquals(TipoCuenta.AHORRO, cuenta.getTipoCuenta());
+        assertEquals(EstatusCuenta.PENDIENTE_REVISION, cuenta.getEstatus());
         assertEquals(new BigDecimal("1000.00"), cuenta.getSaldo());
         assertEquals(10, cuenta.getNumeroCuenta().length());
 
@@ -188,10 +209,14 @@ class ClienteServiceImplTest {
     }
 
     @Test
-    @DisplayName("Consulta de cliente activo devuelve la respuesta mapeada")
+    @DisplayName("Consulta de cliente activo por su titular devuelve la respuesta mapeada")
     void obtenerPorId_existente_devuelveCliente() {
         Cliente cliente = new Cliente();
         cliente.setId(5L);
+        Usuario usuario = usuarioCliente(cliente);
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
+
         when(clienteRepository.findByIdAndActivoTrue(5L)).thenReturn(Optional.of(cliente));
         ClienteResponse expected = new ClienteResponse();
         expected.setId(5L);
@@ -204,18 +229,39 @@ class ClienteServiceImplTest {
     }
 
     @Test
-    @DisplayName("Consulta de cliente inexistente lanza ResourceNotFoundException")
-    void obtenerPorId_inexistente_lanzaExcepcion() {
+    @DisplayName("Cliente no puede consultar perfil de otro cliente (403 AccessDeniedException)")
+    void obtenerPorId_otroCliente_lanzaAccessDenied() {
+        Cliente propio = new Cliente();
+        propio.setId(5L);
+        Usuario usuario = usuarioCliente(propio);
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
+
+        assertThrows(AccessDeniedException.class, () -> servicio.obtenerPorId(99L));
+        verify(clienteRepository, never()).findByIdAndActivoTrue(any());
+    }
+
+    @Test
+    @DisplayName("ADMIN puede consultar cliente inexistente y recibe ResourceNotFoundException")
+    void obtenerPorId_adminInexistente_lanzaExcepcion() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
         when(clienteRepository.findByIdAndActivoTrue(99L)).thenReturn(Optional.empty());
+
         assertThrows(ResourceNotFoundException.class, () -> servicio.obtenerPorId(99L));
     }
 
     @Test
-    @DisplayName("Actualizacion parcial solo procesa los campos enviados")
+    @DisplayName("Actualizacion parcial por su titular solo procesa los campos enviados")
     void actualizar_parcial_soloProcesaCamposEnviados() {
         Cliente cliente = new Cliente();
         cliente.setId(3L);
         cliente.setCorreo("juan.garcia@banco.com");
+        Usuario usuario = usuarioCliente(cliente);
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
+
         when(clienteRepository.findByIdAndActivoTrue(3L)).thenReturn(Optional.of(cliente));
         when(clienteRepository.save(cliente)).thenReturn(cliente);
         when(clienteMapper.toResponse(cliente)).thenReturn(new ClienteResponse());
@@ -236,6 +282,9 @@ class ClienteServiceImplTest {
     void actualizar_menorDeEdad_lanzaExcepcion() {
         Cliente cliente = new Cliente();
         cliente.setId(3L);
+        Usuario usuario = usuarioCliente(cliente);
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
         when(clienteRepository.findByIdAndActivoTrue(3L)).thenReturn(Optional.of(cliente));
 
         ClienteUpdateRequest request = new ClienteUpdateRequest();
@@ -246,8 +295,12 @@ class ClienteServiceImplTest {
     }
 
     @Test
-    @DisplayName("Baja logica inactiva cliente, usuario y cuentas activas")
-    void darDeBaja_inactivaClienteUsuarioYCuentas() {
+    @DisplayName("Baja logica por ADMIN inactiva cliente, usuario y su unica cuenta de ahorro")
+    void darDeBaja_inactivaClienteUsuarioYCuentaUnica() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
+
         Cliente cliente = new Cliente();
         cliente.setId(7L);
         cliente.setActivo(true);
@@ -259,10 +312,9 @@ class ClienteServiceImplTest {
 
         Cuenta activa = new Cuenta();
         activa.setNumeroCuenta("1234567890");
+        activa.setTipoCuenta(TipoCuenta.AHORRO);
         activa.setEstatus(EstatusCuenta.ACTIVA);
-        Cuenta inactiva = new Cuenta();
-        inactiva.setEstatus(EstatusCuenta.INACTIVA);
-        cliente.setCuentas(new ArrayList<>(java.util.List.of(activa, inactiva)));
+        cliente.setCuenta(activa);
 
         when(clienteRepository.findByIdAndActivoTrue(7L)).thenReturn(Optional.of(cliente));
 
@@ -270,11 +322,119 @@ class ClienteServiceImplTest {
 
         assertFalse(cliente.isActivo());
         assertFalse(usuario.isActivo());
+        assertEquals(1L, usuario.getTokenVersion());
         assertEquals(EstatusCuenta.INACTIVA, activa.getEstatus());
-        assertEquals(EstatusCuenta.INACTIVA, inactiva.getEstatus());
         verify(usuarioRepository).save(usuario);
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(1L);
         verify(cuentaRepository).save(activa);
-        verify(cuentaRepository, never()).save(inactiva);
+    }
+
+    @Test
+    @DisplayName("Onboarding rechaza jerarquia geografica inconsistente entre colonia/municipio/estado/pais")
+    void registrarCliente_jerarquiaDomicilioInconsistente_lanzaReglaNegocio() {
+        ClienteRegistroRequest request = requestValido();
+
+        when(clienteRepository.existsByCurp(anyString())).thenReturn(false);
+        when(clienteRepository.existsByRfc(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(generosRepository.findById(1L)).thenReturn(Optional.of(new CatalogoGeneros()));
+        when(nacionalidadRepository.findById(1L)).thenReturn(Optional.of(new CatalogoNacionalidad()));
+        when(estadoCivilRepository.findById(1L)).thenReturn(Optional.of(new CatalogoEstadoCivil()));
+        when(clienteMapper.toEntity(any())).thenReturn(new Cliente());
+        when(clienteRepository.save(any(Cliente.class))).thenAnswer(inv -> {
+            Cliente c = inv.getArgument(0);
+            c.setId(1L);
+            return c;
+        });
+
+        CatalogoPais pais = new CatalogoPais();
+        pais.setId(1L);
+        CatalogoEstado estado = new CatalogoEstado();
+        estado.setId(1L);
+        estado.setCatalogoPais(pais);
+        CatalogoMunicipio otroMunicipio = new CatalogoMunicipio();
+        otroMunicipio.setId(99L);
+        otroMunicipio.setCatalogoEstado(estado);
+        CatalogoMunicipio municipio = new CatalogoMunicipio();
+        municipio.setId(1L);
+        municipio.setCatalogoEstado(estado);
+        CatalogoColonia colonia = new CatalogoColonia();
+        colonia.setId(1L);
+        colonia.setCatalogoMunicipio(otroMunicipio);
+
+        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(colonia));
+        when(municipioRepository.findById(1L)).thenReturn(Optional.of(municipio));
+        when(estadoRepository.findById(1L)).thenReturn(Optional.of(estado));
+        when(paisRepository.findById(1L)).thenReturn(Optional.of(pais));
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.registrarCliente(request));
+        verify(domicilioClienteRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Actualizar correo de cliente sincroniza usuario, incrementa tokenVersion y revoca refresh tokens")
+    void actualizar_cambioCorreo_sincronizaUsuarioYRevocaSesiones() {
+        Cliente cliente = new Cliente();
+        cliente.setId(3L);
+        cliente.setCorreo("juan.garcia@banco.com");
+        Usuario usuario = usuarioCliente(cliente);
+        usuario.setTokenVersion(0L);
+        cliente.setUsuario(usuario);
+
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
+        when(clienteRepository.findByIdAndActivoTrue(3L)).thenReturn(Optional.of(cliente));
+        when(clienteRepository.existsByCorreoAndIdNot("nuevo@banco.com", 3L)).thenReturn(false);
+        when(usuarioRepository.existsByCorreo("nuevo@banco.com")).thenReturn(false);
+        when(clienteRepository.save(cliente)).thenReturn(cliente);
+        when(clienteMapper.toResponse(cliente)).thenReturn(new ClienteResponse());
+
+        ClienteUpdateRequest request = new ClienteUpdateRequest();
+        request.setCorreo(" Nuevo@Banco.com ");
+
+        servicio.actualizar(3L, request);
+
+        assertEquals("nuevo@banco.com", cliente.getCorreo());
+        assertEquals("nuevo@banco.com", usuario.getCorreo());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(usuarioRepository).save(usuario);
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Baja logica bloqueada si existen transacciones en proceso o pendientes de conciliacion")
+    void darDeBaja_conTransaccionesPendientes_lanzaReglaNegocio() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
+
+        Cliente cliente = new Cliente();
+        cliente.setId(7L);
+        cliente.setActivo(true);
+        when(clienteRepository.findByIdAndActivoTrue(7L)).thenReturn(Optional.of(cliente));
+        when(transaccionServicioRepository.existsByClienteIdAndEstatusIn(any(), any())).thenReturn(true);
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.darDeBaja(7L));
+        verify(clienteRepository, never()).save(any());
+    }
+
+    private static Usuario usuarioCliente(Cliente cliente) {
+        Usuario u = new Usuario();
+        u.setId(10L);
+        u.setRol(AuthenticatedUserService.ROLE_CLIENTE);
+        u.setActivo(true);
+        u.setCliente(cliente);
+        return u;
+    }
+
+    private static Usuario usuarioAdmin() {
+        Usuario u = new Usuario();
+        u.setId(1L);
+        u.setCorreo("admin@banco.com");
+        u.setRol(AuthenticatedUserService.ROLE_ADMIN);
+        u.setActivo(true);
+        return u;
     }
 
     private static ClienteRegistroRequest requestValido() {

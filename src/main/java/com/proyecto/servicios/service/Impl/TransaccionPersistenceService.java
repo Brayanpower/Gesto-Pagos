@@ -2,14 +2,17 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.gestopago.TransaccionServicio;
 import com.proyecto.servicios.exception.CuentaNoOperativaException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.SaldoInsuficienteException;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult;
+import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.ReservaSaldoCommand;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import com.proyecto.servicios.security.LogSanitizer;
@@ -23,6 +26,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
@@ -31,6 +35,7 @@ import java.util.Optional;
 @Slf4j
 public class TransaccionPersistenceService {
 
+    private static final String TX_NO_ENCONTRADA = "Transaccion no encontrada: ";
     private static final DateTimeFormatter HORA_LOCAL_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     private final CuentaRepository cuentaRepository;
@@ -58,16 +63,16 @@ public class TransaccionPersistenceService {
      * y registra la transaccion en EN_PROCESO liberando la conexion antes del llamado HTTP.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public TransaccionServicio reservarYDebitarSaldo(
-            Long clienteAutenticadoId,
-            String numeroCuenta,
-            String claveIdempotencia,
-            CatalogoProducto producto,
-            Integer idServicio,
-            Integer idProducto,
-            BigDecimal monto,
-            String telefono,
-            String referencia) {
+    public TransaccionServicio reservarYDebitarSaldo(ReservaSaldoCommand cmd) {
+        Long clienteAutenticadoId = cmd.clienteAutenticadoId();
+        String numeroCuenta = cmd.numeroCuenta();
+        String claveIdempotencia = cmd.claveIdempotencia();
+        CatalogoProducto producto = cmd.producto();
+        Integer idServicio = cmd.idServicio();
+        Integer idProducto = cmd.idProducto();
+        BigDecimal monto = cmd.monto();
+        String telefono = cmd.telefono();
+        String referencia = cmd.referencia();
 
         Cuenta cuenta = cuentaRepository.findByNumeroCuentaForUpdate(numeroCuenta)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -83,9 +88,12 @@ public class TransaccionPersistenceService {
             throw new AccessDeniedException("El cliente titular no se encuentra activo para realizar operaciones.");
         }
 
+        if (cuenta.getTipoCuenta() != null && cuenta.getTipoCuenta() != TipoCuenta.AHORRO) {
+            throw new ReglaNegocioException("Solo esta permitido operar compras de servicios desde una cuenta de ahorro.");
+        }
+
         if (cuenta.getEstatus() != EstatusCuenta.ACTIVA) {
-            throw new CuentaNoOperativaException(
-                    "La cuenta bancaria no se encuentra activa (estatus: " + cuenta.getEstatus() + ").");
+            throw new CuentaNoOperativaException(mensajeCuentaNoOperativa(cuenta.getEstatus()));
         }
 
         Optional<TransaccionServicio> existentePorClave = transaccionRepository.findByClaveIdempotencia(claveIdempotencia);
@@ -94,7 +102,7 @@ public class TransaccionPersistenceService {
                     "Ya existe una solicitud registrada con la misma clave de idempotencia.");
         }
 
-        LocalDateTime ventanaDesde = LocalDateTime.now().minusSeconds(Math.max(1L, duplicateWindowSeconds));
+        LocalDateTime ventanaDesde = LocalDateTime.now(ZoneId.systemDefault()).minusSeconds(Math.max(1L, duplicateWindowSeconds));
         boolean duplicadaReciente = transaccionRepository.existeOperacionDuplicadaReciente(
                 cuenta.getId(),
                 idServicio,
@@ -102,8 +110,6 @@ public class TransaccionPersistenceService {
                 monto,
                 telefono != null ? telefono : "",
                 referencia != null ? referencia : "",
-                List.of(EstatusTransaccion.EN_PROCESO, EstatusTransaccion.PENDIENTE_CONCILIACION),
-                EstatusTransaccion.EXITOSA,
                 ventanaDesde
         );
 
@@ -124,7 +130,7 @@ public class TransaccionPersistenceService {
         cuentaRepository.save(cuenta);
 
         String upc = generarUpcUnico();
-        String horaLocal = LocalDateTime.now().format(HORA_LOCAL_FMT);
+        String horaLocal = LocalDateTime.now(ZoneId.systemDefault()).format(HORA_LOCAL_FMT);
 
         TransaccionServicio tx = new TransaccionServicio();
         tx.setCuenta(cuenta);
@@ -153,8 +159,7 @@ public class TransaccionPersistenceService {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public TransaccionServicio confirmarExito(Long transaccionId, GestoPagoTxResult resultado) {
-        TransaccionServicio tx = transaccionRepository.findById(transaccionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Transaccion no encontrada: " + transaccionId));
+        TransaccionServicio tx = buscarTransaccion(transaccionId);
 
         if (tx.getEstatus() == EstatusTransaccion.EXITOSA) {
             return tx;
@@ -179,8 +184,7 @@ public class TransaccionPersistenceService {
             String codigoProveedor,
             String mensajeProveedor) {
 
-        TransaccionServicio tx = transaccionRepository.findById(transaccionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Transaccion no encontrada: " + transaccionId));
+        TransaccionServicio tx = buscarTransaccion(transaccionId);
 
         if (tx.getEstatus() == EstatusTransaccion.RECHAZADA
                 || tx.getEstatus() == EstatusTransaccion.REVERSADA
@@ -213,8 +217,7 @@ public class TransaccionPersistenceService {
             String mensajeProveedor,
             boolean incrementarIntento) {
 
-        TransaccionServicio tx = transaccionRepository.findById(transaccionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Transaccion no encontrada: " + transaccionId));
+        TransaccionServicio tx = buscarTransaccion(transaccionId);
 
         if (tx.getEstatus() == EstatusTransaccion.EXITOSA
                 || tx.getEstatus() == EstatusTransaccion.RECHAZADA
@@ -232,6 +235,11 @@ public class TransaccionPersistenceService {
         return transaccionRepository.save(tx);
     }
 
+    private TransaccionServicio buscarTransaccion(Long transaccionId) {
+        return transaccionRepository.findByIdForUpdate(transaccionId)
+                .orElseThrow(() -> new ResourceNotFoundException(TX_NO_ENCONTRADA + transaccionId));
+    }
+
     private String generarUpcUnico() {
         String upc;
         do {
@@ -239,6 +247,16 @@ public class TransaccionPersistenceService {
             upc = String.valueOf(numero);
         } while (transaccionRepository.existsByUpc(upc));
         return upc;
+    }
+
+    private static String mensajeCuentaNoOperativa(EstatusCuenta estatus) {
+        if (estatus == EstatusCuenta.PENDIENTE_REVISION) {
+            return "Tu cuenta de ahorro aun se encuentra pendiente de revision y aprobacion por un administrador.";
+        }
+        if (estatus == EstatusCuenta.RECHAZADA) {
+            return "Tu cuenta de ahorro fue rechazada en la revision de onboarding y no puede realizar compras.";
+        }
+        return "La cuenta de ahorro no se encuentra activa (estatus: " + estatus + ").";
     }
 
     private static String truncar(String valor, int max) {

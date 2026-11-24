@@ -33,7 +33,6 @@ import static org.mockito.Mockito.when;
 @DisplayName("Pruebas de GestoPagoTokenServiceImpl (Seguridad Bearer Token)")
 class GestoPagoTokenServiceImplTest {
 
-    private static final String TEST_IV = "p5ldmBPdd/9pjC0bDC/nSg==";
     private static final String TEST_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
 
     @Mock private GestoPagoAuthClient authClient;
@@ -44,7 +43,7 @@ class GestoPagoTokenServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        EncryptionHelper encryptionHelper = new EncryptionHelperImpl(new ObjectMapper(), TEST_IV, TEST_KEY);
+        EncryptionHelper encryptionHelper = new EncryptionHelperImpl(new ObjectMapper(), TEST_KEY);
         tokenService = new GestoPagoTokenServiceImpl(authClient, tokenRepository, tokenMapper, encryptionHelper);
         ReflectionTestUtils.setField(tokenService, "idDistribuidor", 83);
         ReflectionTestUtils.setField(tokenService, "codigoDispositivo", "GPS83-TPV-17");
@@ -103,6 +102,37 @@ class GestoPagoTokenServiceImplTest {
                 .thenThrow(new RuntimeException("Auth service down"));
 
         assertThrows(ProveedorExternoException.class, () -> tokenService.obtenerBearerTokenValido());
+    }
+
+    @Test
+    @DisplayName("invalidarTokenActual desactiva el token almacenado en BD")
+    void invalidarTokenActual_desactivaToken() {
+        GestoPagoToken token = new GestoPagoToken();
+        token.setIdDistribuidor(83);
+        token.setCodigoDispositivo("GPS83-TPV-17");
+        token.setActivo(true);
+        when(tokenRepository.findByIdDistribuidorAndCodigoDispositivo(83, "GPS83-TPV-17"))
+                .thenReturn(Optional.of(token));
+
+        tokenService.invalidarTokenActual();
+
+        assertEquals(false, token.getActivo());
+        verify(tokenRepository).save(token);
+    }
+
+    @Test
+    @DisplayName("Token sin fechas de referencia se considera no vigente (fail-closed) y dispara renovacion")
+    void obtenerBearerTokenValido_sinFechasReferencia_noEsVigente() {
+        GestoPagoToken sinFechas = new GestoPagoToken();
+        sinFechas.setToken("ENC:dummy");
+        sinFechas.setActivo(true);
+        when(tokenRepository.findByIdDistribuidorAndCodigoDispositivo(83, "GPS83-TPV-17"))
+                .thenReturn(Optional.of(sinFechas));
+        when(authClient.authenticate(83, "GPS83-TPV-17", "secretPass"))
+                .thenThrow(new RuntimeException("Auth down"));
+
+        assertThrows(ProveedorExternoException.class, () -> tokenService.obtenerBearerTokenValido());
+        verify(authClient).authenticate(83, "GPS83-TPV-17", "secretPass");
     }
 }
 

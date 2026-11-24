@@ -3,15 +3,21 @@ package com.proyecto.servicios.config;
 import com.proyecto.servicios.service.GestoPagoTokenService;
 import feign.Logger;
 import feign.RequestInterceptor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 
-public class acamGestoPagoFeignConfig {
+public class AcamGestoPagoFeignConfig {
 
     @Bean
-    public RequestInterceptor gestoPagoAuthInterceptor(GestoPagoTokenService tokenService) {
+    public RequestInterceptor gestoPagoAuthInterceptor(
+            GestoPagoTokenService tokenService,
+            @Value("${gestopago.auth.api-key:}") String apiKey) {
         return requestTemplate -> {
             String token = tokenService.obtenerBearerTokenValido();
             requestTemplate.header("Authorization", "Bearer " + token);
+            if (apiKey != null && !apiKey.isBlank()) {
+                requestTemplate.header("X-API-Key", apiKey.trim());
+            }
         };
     }
 

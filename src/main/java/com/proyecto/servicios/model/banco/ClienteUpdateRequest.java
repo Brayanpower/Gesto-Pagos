@@ -47,10 +47,10 @@ public class ClienteUpdateRequest {
     @Size(max = 100, message = "El correo no debe exceder 100 caracteres")
     private String correo;
 
-    @Pattern(regexp = "^[0-9]{10}$", message = "El telefono movil debe tener exactamente 10 digitos")
+    @Pattern(regexp = "^\\d{10}$", message = "El telefono movil debe tener exactamente 10 digitos")
     private String telefonoMovil;
 
-    @Pattern(regexp = "^[0-9]{10}$", message = "El telefono alternativo debe tener exactamente 10 digitos")
+    @Pattern(regexp = "^\\d{10}$", message = "El telefono alternativo debe tener exactamente 10 digitos")
     private String telefonoAlternativo;
 
     @Size(min = 1, max = 100, message = "La ocupacion debe tener entre 1 y 100 caracteres")
@@ -60,6 +60,7 @@ public class ClienteUpdateRequest {
     private String empresa;
 
     @DecimalMin(value = "0.01", message = "El ingreso mensual debe ser mayor a cero")
+    @Digits(integer = 13, fraction = 2, message = "El ingreso mensual debe tener hasta 13 digitos enteros y maximo 2 decimales")
     private BigDecimal ingresoMensual;
 
     @Valid

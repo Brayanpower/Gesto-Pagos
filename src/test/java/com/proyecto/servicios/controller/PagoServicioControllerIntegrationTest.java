@@ -78,6 +78,17 @@ class PagoServicioControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "admin@banco.com", roles = "ADMIN")
+    @DisplayName("POST /servicios/pagos como ROLE_ADMIN devuelve 403 Forbidden (solo ROLE_CLIENTE compra)")
+    void realizarPago_comoAdmin_retorna403() throws Exception {
+        mockMvc.perform(post("/servicios/pagos")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(requestValido())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.codigo").value(403));
+    }
+
+    @Test
     @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
     @DisplayName("POST /servicios/pagos autenticado y exitoso devuelve 201 Created")
     void realizarPago_autenticadoExitoso_retorna201() throws Exception {
@@ -219,10 +230,7 @@ class PagoServicioControllerIntegrationTest {
                 eq(LocalDate.of(2026, 10, 31)),
                 eq("1234567890"),
                 eq(EstatusTransaccion.EXITOSA),
-                eq(0),
-                eq(5),
-                eq("fechaCreacion"),
-                eq("DESC")
+                any()
         )).thenReturn(page);
 
         mockMvc.perform(get("/servicios/historial")
@@ -238,6 +246,19 @@ class PagoServicioControllerIntegrationTest {
                 .andExpect(jsonPath("$.tamanoPagina").value(5))
                 .andExpect(jsonPath("$.contenido[0].upc").value("1234567890"))
                 .andExpect(jsonPath("$.contenido[0].estatus").value("EXITOSA"));
+    }
+
+    @Test
+    @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+    @DisplayName("GET /servicios/historial con page negativo o size fuera de rango devuelve 400 Bad Request")
+    void obtenerHistorial_paginacionInvalida_retorna400() throws Exception {
+        mockMvc.perform(get("/servicios/historial").param("page", "-1").param("size", "10"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+
+        mockMvc.perform(get("/servicios/historial").param("page", "0").param("size", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
     }
 
     private static SendTxRequest requestValido() {

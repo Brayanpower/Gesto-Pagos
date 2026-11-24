@@ -7,6 +7,7 @@ import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.PessimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -179,9 +180,13 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<GenericResponse> handleBadCredentials(BadCredentialsException ex) {
         log.warn("Intento de autenticacion con credenciales invalidas");
+        String rawMsg = ex.getMessage();
+        String mensaje = (rawMsg == null || rawMsg.isBlank() || "Credenciales invalidas".equals(rawMsg))
+                ? "Credenciales invalidas: Correo o contrasena incorrectos"
+                : rawMsg;
         GenericResponse response = new GenericResponse();
         response.setCodigo(HttpStatus.UNAUTHORIZED.value());
-        response.setMensaje("Credenciales invalidas: Correo o contrasena incorrectos");
+        response.setMensaje(mensaje);
         return new ResponseEntity<>(response, HttpStatus.UNAUTHORIZED);
     }
 
@@ -192,6 +197,26 @@ public class GlobalExceptionHandler {
         response.setCodigo(HttpStatus.FORBIDDEN.value());
         response.setMensaje(ex.getMessage());
         return new ResponseEntity<>(response, HttpStatus.FORBIDDEN);
+    }
+
+    @ExceptionHandler(CuentaBloqueadaException.class)
+    public ResponseEntity<GenericResponse> handleCuentaBloqueada(CuentaBloqueadaException ex) {
+        log.warn("Acceso rechazado por cuenta bloqueada temporalmente: {}", LogSanitizer.sanitize(ex.getMessage()));
+        GenericResponse response = new GenericResponse();
+        response.setCodigo(HttpStatus.LOCKED.value());
+        response.setMensaje(ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.LOCKED);
+    }
+
+    @ExceptionHandler(RateLimitExceededException.class)
+    public ResponseEntity<GenericResponse> handleRateLimitExceeded(RateLimitExceededException ex) {
+        log.warn("Limite de intentos excedido; retryAfterSeconds={}", ex.getRetryAfterSeconds());
+        GenericResponse response = new GenericResponse();
+        response.setCodigo(HttpStatus.TOO_MANY_REQUESTS.value());
+        response.setMensaje(ex.getMessage());
+        return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
+                .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
+                .body(response);
     }
 
     @ExceptionHandler(AccessDeniedException.class)

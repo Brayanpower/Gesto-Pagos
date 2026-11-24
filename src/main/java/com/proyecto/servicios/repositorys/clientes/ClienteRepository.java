@@ -1,10 +1,13 @@
 package com.proyecto.servicios.repositorys.clientes;
 
 import com.proyecto.servicios.entity.clientes.Cliente;
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
@@ -13,6 +16,21 @@ import java.util.Optional;
 
 @Repository
 public interface ClienteRepository extends JpaRepository<Cliente, Long>, JpaSpecificationExecutor<Cliente> {
+
+    @Override
+    @EntityGraph(attributePaths = {
+            "genero",
+            "nacionalidad",
+            "estadoCivil",
+            "domicilio",
+            "domicilio.colonia",
+            "domicilio.municipio",
+            "domicilio.estado",
+            "domicilio.pais",
+            "cuenta",
+            "usuario"
+    })
+    List<Cliente> findAll(@Nullable Specification<Cliente> spec);
 
     Optional<Cliente> findByCurp(String curp);
 
@@ -26,11 +44,13 @@ public interface ClienteRepository extends JpaRepository<Cliente, Long>, JpaSpec
 
     boolean existsByCorreo(String correo);
 
+    boolean existsByCorreoAndIdNot(String correo, Long id);
+
     List<Cliente> findByActivoTrue();
 
     Optional<Cliente> findByIdAndActivoTrue(Long id);
 
-    boolean existsByCuentasNumeroCuenta(String numeroCuenta);
+    boolean existsByCuentaNumeroCuenta(String numeroCuenta);
 
     @Query("select count(c) > 0 from Cuenta c "
             + "where c.numeroCuenta = :numeroCuenta "

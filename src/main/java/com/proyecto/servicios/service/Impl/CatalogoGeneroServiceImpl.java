@@ -2,6 +2,7 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.catalogos.CatalogoGeneros;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
+import com.proyecto.servicios.exception.DuplicateResourceException;
 import com.proyecto.servicios.mapper.CatalogoGeneroMapper;
 import com.proyecto.servicios.model.catalogos.CatalogoGeneroRequest;
 import com.proyecto.servicios.model.catalogos.CatalogoGeneroResponse;
@@ -42,7 +43,7 @@ public class CatalogoGeneroServiceImpl implements CatalogoGeneroService {
     @Transactional(readOnly = true)
     public List<CatalogoGeneroResponse> buscarPorTipo(String tipo) {
         if (tipo == null || tipo.isBlank()) {
-            return obtenerCatalogo();
+            return catalogoGeneroMapper.toResponses(catalogoGenerosRepository.findAll());
         }
         return catalogoGeneroMapper.toResponses(
                 catalogoGenerosRepository.findByTipoContainingIgnoreCaseOrderByTipoAsc(tipo.trim()));
@@ -56,7 +57,7 @@ public class CatalogoGeneroServiceImpl implements CatalogoGeneroService {
         }
         String tipo = request.getTipo().trim();
         if (catalogoGenerosRepository.findByTipo(tipo).isPresent()) {
-            throw new IllegalArgumentException("El tipo de genero ya existe en el catalogo: " + tipo);
+            throw new DuplicateResourceException("El tipo de genero ya existe en el catalogo: " + tipo);
         }
         CatalogoGeneros entidad = catalogoGeneroMapper.toEntity(request);
         entidad.setTipo(tipo);
@@ -76,7 +77,7 @@ public class CatalogoGeneroServiceImpl implements CatalogoGeneroService {
         catalogoGenerosRepository.findByTipo(tipo)
                 .filter(existente -> !existente.getId().equals(id))
                 .ifPresent(existente -> {
-                    throw new IllegalArgumentException("El tipo de genero ya existe en el catalogo: " + tipo);
+                    throw new DuplicateResourceException("El tipo de genero ya existe en el catalogo: " + tipo);
                 });
         catalogoGeneroMapper.updateEntity(request, entidad);
         entidad.setTipo(tipo);

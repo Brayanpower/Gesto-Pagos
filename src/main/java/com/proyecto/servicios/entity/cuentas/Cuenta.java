@@ -13,6 +13,7 @@ import lombok.Setter;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "cuentas")
@@ -32,9 +33,14 @@ public class Cuenta {
     private String numeroCuenta;
 
     @NotNull(message = "El cliente titular es obligatorio")
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "cliente_id", nullable = false)
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cliente_id", nullable = false, unique = true)
     private Cliente cliente;
+
+    @NotNull(message = "El tipo de cuenta es obligatorio")
+    @Enumerated(EnumType.STRING)
+    @Column(name = "tipo_cuenta", nullable = false, length = 20)
+    private TipoCuenta tipoCuenta = TipoCuenta.AHORRO;
 
     @NotNull(message = "El saldo es obligatorio")
     @DecimalMin(value = "0.00", message = "El saldo inicial no puede ser negativo")
@@ -43,8 +49,17 @@ public class Cuenta {
 
     @NotNull(message = "El estatus de la cuenta es obligatorio")
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, length = 20)
+    @Column(nullable = false, length = 30)
     private EstatusCuenta estatus;
+
+    @Column(name = "revisado_por", length = 100)
+    private String revisadoPor;
+
+    @Column(name = "observacion_revision", length = 255)
+    private String observacionRevision;
+
+    @Column(name = "fecha_revision")
+    private LocalDateTime fechaRevision;
 
     @Column(name = "fecha_creacion", nullable = false, updatable = false)
     private LocalDateTime fechaCreacion;
@@ -54,9 +69,12 @@ public class Cuenta {
 
     @PrePersist
     public void prePersist() {
-        this.fechaCreacion = LocalDateTime.now();
+        this.fechaCreacion = LocalDateTime.now(ZoneId.systemDefault());
+        if (this.tipoCuenta == null) {
+            this.tipoCuenta = TipoCuenta.AHORRO;
+        }
         if (this.estatus == null) {
-            this.estatus = EstatusCuenta.ACTIVA;
+            this.estatus = EstatusCuenta.PENDIENTE_REVISION;
         }
         if (this.saldo == null) {
             this.saldo = BigDecimal.ZERO;
@@ -65,6 +83,6 @@ public class Cuenta {
 
     @PreUpdate
     public void preUpdate() {
-        this.fechaActualizacion = LocalDateTime.now();
+        this.fechaActualizacion = LocalDateTime.now(ZoneId.systemDefault());
     }
 }
