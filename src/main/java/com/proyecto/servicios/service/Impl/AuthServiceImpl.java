@@ -44,6 +44,7 @@ public class AuthServiceImpl implements AuthService {
     private static final String CORREO_DESCONOCIDO = "desconocido";
     private static final String CLAIM_ROL = "rol";
     private static final String CLAIM_CLIENTE_ID = "clienteId";
+    private static final String DUMMY_BCRYPT_HASH = "$2a$10$7EqJtq98hPqEX7fNZaFWoOHi6M1zP2xR8nM8sA7bK9u5m2vJ9u6G2";
 
     private final UsuarioRepository usuarioRepository;
     private final PasswordEncoder passwordEncoder;
@@ -97,26 +98,55 @@ public class AuthServiceImpl implements AuthService {
     }
 
     @Override
-    @Transactional(noRollbackFor = {BadCredentialsException.class, DisabledException.class})
+    @Transactional(noRollbackFor = {
+            BadCredentialsException.class,
+            CuentaBloqueadaException.class,
+            DisabledException.class
+    })
     public AuthResponse verificarTotp(TotpVerificationRequest request, ClientMetadata metadata) {
         ClientMetadata meta = normalizarMetadata(metadata);
-        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), null);
+        String challengeToken = request != null ? request.getChallengeToken() : null;
+        String codigo = request != null ? request.getCodigo() : null;
+
+        Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+        String correoRateLimit = usuarioDesafio != null ? usuarioDesafio.getCorreo() : null;
+        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), correoRateLimit);
+
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+        if (estaBloqueado(usuarioDesafio, now)) {
+            loginAuditService.registrarEvento(
+                    usuarioDesafio, usuarioDesafio.getCorreo(), LoginAuditService.EVENTO_CUENTA_BLOQUEADA, false, meta,
+                    "Cuenta bloqueada temporalmente por intentos fallidos");
+            throw new CuentaBloqueadaException(MSG_CUENTA_BLOQUEADA);
+        }
 
         Usuario usuario;
         try {
-            usuario = mfaService.validarDesafioYCodigo(request.getChallengeToken(), request.getCodigo());
+            usuario = mfaService.validarDesafioYCodigo(challengeToken, codigo);
         } catch (BadCredentialsException ex) {
-            Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(request.getChallengeToken()).orElse(null);
-            String correoAuditoria = usuarioDesafio != null ? usuarioDesafio.getCorreo() : CORREO_DESCONOCIDO;
-            loginAuditService.registrarEvento(
-                    usuarioDesafio, correoAuditoria, LoginAuditService.EVENTO_TOTP_INVALIDO, false, meta,
-                    "Verificacion de desafio TOTP fallida");
+            if (usuarioDesafio == null) {
+                usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+            }
+            if (usuarioDesafio != null) {
+                int intentos = incrementarIntentosFallidos(usuarioDesafio);
+                loginAuditService.registrarEvento(
+                        usuarioDesafio, usuarioDesafio.getCorreo(), LoginAuditService.EVENTO_TOTP_INVALIDO, false, meta,
+                        "Verificacion de desafio TOTP fallida");
+                if (excedeLimiteIntentos(intentos)) {
+                    throw bloquearUsuarioPorIntentos(
+                            usuarioDesafio, usuarioDesafio.getCorreo(), meta, now,
+                            "Cuenta bloqueada tras superar intentos fallidos de desafio TOTP");
+                }
+                usuarioRepository.save(usuarioDesafio);
+            } else {
+                loginAuditService.registrarEvento(
+                        null, CORREO_DESCONOCIDO, LoginAuditService.EVENTO_TOTP_INVALIDO, false, meta,
+                        "Verificacion de desafio TOTP fallida");
+            }
             throw ex;
         }
 
         validarUsuarioYClienteActivos(usuario, usuario.getCorreo(), meta);
-        limpiarIntentosFallidos(usuario);
-        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
         return completarLoginExitoso(usuario, meta, now);
     }
 
@@ -197,14 +227,19 @@ public class AuthServiceImpl implements AuthService {
         }
 
         String rawPassword = request != null ? request.getPassword() : null;
-        if (usuario == null || rawPassword == null || !passwordEncoder.matches(rawPassword, usuario.getPasswordHash())) {
+        if (usuario == null) {
+            if (rawPassword != null) {
+                passwordEncoder.matches(rawPassword, DUMMY_BCRYPT_HASH);
+            }
+            throw registrarFalloPassword(null, correo, meta, now);
+        }
+        if (rawPassword == null || !passwordEncoder.matches(rawPassword, usuario.getPasswordHash())) {
             throw registrarFalloPassword(usuario, correo, meta, now);
         }
 
         validarUsuarioYClienteActivos(usuario, correo, meta);
 
         if (!usuario.isTotpObligatorio()) {
-            limpiarIntentosFallidos(usuario);
             return completarLoginExitoso(usuario, meta, now);
         }
 
@@ -213,8 +248,6 @@ public class AuthServiceImpl implements AuthService {
             return procesarLoginConTotpDirecto(usuario, codigoTotp.trim(), correo, meta, now);
         }
 
-        limpiarIntentosFallidos(usuario);
-        usuarioRepository.save(usuario);
         return iniciarDesafioTotp(usuario, correo, meta);
     }
 
@@ -268,7 +301,6 @@ public class AuthServiceImpl implements AuthService {
             throw ex;
         }
 
-        limpiarIntentosFallidos(usuario);
         return completarLoginExitoso(usuario, meta, now);
     }
 
@@ -303,6 +335,7 @@ public class AuthServiceImpl implements AuthService {
     }
 
     private AuthResponse completarLoginExitoso(Usuario usuario, ClientMetadata meta, LocalDateTime now) {
+        limpiarIntentosFallidos(usuario);
         usuario.setUltimoLogin(now);
         usuarioRepository.save(usuario);
 

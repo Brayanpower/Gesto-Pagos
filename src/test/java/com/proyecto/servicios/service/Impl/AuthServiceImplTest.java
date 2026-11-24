@@ -281,6 +281,48 @@ class AuthServiceImplTest {
     }
 
     @Test
+    @DisplayName("verificarTotp acumula intentosFallidos, bloquea al alcanzar el maximo y rechaza si ya esta bloqueado")
+    void verificarTotp_fallosSucesivos_bloqueanCuentaYRechazanPosterior() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(3);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-lock")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioYCodigo("chal-lock", "000000"))
+                .thenThrow(new BadCredentialsException("Codigo TOTP invalido"));
+
+        TotpVerificationRequest req = new TotpVerificationRequest("chal-lock", "000000");
+        assertThrows(BadCredentialsException.class, () -> servicio.verificarTotp(req, METADATA));
+        assertEquals(4, usuario.getIntentosFallidos());
+        assertNull(usuario.getBloqueadoHasta());
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.verificarTotp(req, METADATA));
+        assertEquals(5, usuario.getIntentosFallidos());
+        assertNotNull(usuario.getBloqueadoHasta());
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.verificarTotp(req, METADATA));
+        verify(loginRateLimiter, times(3)).verificarYRegistrarIntento("203.0.113.10", CORREO);
+        verify(mfaService, times(2)).validarDesafioYCodigo("chal-lock", "000000");
+        verify(loginAuditService, times(2)).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_CUENTA_BLOQUEADA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Iniciar desafio TOTP no borra intentos fallidos previos antes de validar el segundo factor")
+    void login_iniciarDesafioTotp_conservaIntentosFallidosHastaVerificarTotp() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(2);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("chal-keep", false, null, null));
+
+        AuthResponse response = servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA);
+
+        assertTrue(response.getRequiereTotp());
+        assertEquals(2, usuario.getIntentosFallidos());
+    }
+
+    @Test
     @DisplayName("Bloqueo automatico tras 5 intentos fallidos de contrasena y rechazo de intentos posteriores")
     void login_cincoIntentosFallidos_bloqueaCuenta() {
         Usuario usuario = usuarioActivo(true, false);
@@ -336,12 +378,13 @@ class AuthServiceImplTest {
     }
 
     @Test
-    @DisplayName("Usuario inexistente audita PASSWORD_INVALIDA y lanza BadCredentialsException")
+    @DisplayName("Usuario inexistente ejecuta BCrypt dummy anti-timing, audita PASSWORD_INVALIDA y lanza BadCredentialsException")
     void login_usuarioInexistente_auditaYLanzaBadCredentials() {
         when(usuarioRepository.findWithClienteByCorreo("nadie@banco.com")).thenReturn(Optional.empty());
 
         assertThrows(BadCredentialsException.class,
                 () -> servicio.login(new LoginRequest("nadie@banco.com", PASSWORD), METADATA));
+        verify(passwordEncoder).matches(eq(PASSWORD), anyString());
         verify(loginAuditService).registrarEvento(
                 eq(null), eq("nadie@banco.com"), eq(LoginAuditService.EVENTO_PASSWORD_INVALIDA),
                 eq(false), eq(METADATA), anyString());

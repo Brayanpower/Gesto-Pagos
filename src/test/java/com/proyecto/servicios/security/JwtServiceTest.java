@@ -22,12 +22,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DisplayName("Pruebas unitarias de JwtService")
 class JwtServiceTest {
 
-    private static final String TEST_SECRET = "404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970";
+    private static final String TEST_SECRET = "test-only-jwt-signing-secret-key-minimum-32-bytes-0123456789";
     private static final String DEFAULT_ISSUER = "sistema-bancario-core";
 
     private JwtService jwtService;
@@ -148,8 +149,8 @@ class JwtServiceTest {
     }
 
     @Test
-    @DisplayName("Permite validar UserDetails generico cuando token no incluye issuer")
-    void isTokenValid_userDetailsGenericoYTokenSinIssuer_retornaTrue() {
+    @DisplayName("Rechaza token sin claim iss cuando jwtIssuer esta configurado y lo permite si jwtIssuer esta vacio")
+    void isTokenValid_tokenSinIssuer_exigeIssCuandoEstaConfigurado() {
         Instant ahora = Instant.now();
         String tokenSinIssuer = Jwts.builder()
                 .id("jti-no-iss")
@@ -160,7 +161,24 @@ class JwtServiceTest {
                 .compact();
 
         UserDetails generico = User.withUsername("generico@banco.com").password("x").roles("CLIENTE").build();
+        assertFalse(jwtService.isTokenValid(tokenSinIssuer, generico));
+
+        ReflectionTestUtils.setField(jwtService, "jwtIssuer", "");
         assertTrue(jwtService.isTokenValid(tokenSinIssuer, generico));
+    }
+
+    @Test
+    @DisplayName("validarConfiguracion rechaza jwt.secret vacio o menor a 32 bytes y acepta llave robusta")
+    void validarConfiguracion_validaLongitudMinimaDeLlave() {
+        JwtService vacio = new JwtService();
+        ReflectionTestUtils.setField(vacio, "secretKey", "  ");
+        assertThrows(IllegalStateException.class, vacio::validarConfiguracion);
+
+        JwtService corto = new JwtService();
+        ReflectionTestUtils.setField(corto, "secretKey", "llave-demasiado-corta");
+        assertThrows(IllegalStateException.class, corto::validarConfiguracion);
+
+        jwtService.validarConfiguracion();
     }
 
     @Test

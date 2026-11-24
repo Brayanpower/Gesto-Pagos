@@ -9,6 +9,7 @@ import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
+import com.proyecto.servicios.security.ClientIpResolver;
 import com.proyecto.servicios.service.AuthService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -38,14 +39,12 @@ import org.springframework.web.bind.annotation.RestController;
 )
 public class AuthController {
 
-    private static final String HEADER_X_FORWARDED_FOR = "X-Forwarded-For";
     private static final int MAX_PAGE_SIZE = 100;
-    private static final int MAX_IP_LENGTH = 64;
 
     private final AuthService authService;
 
-    @Value("${app.auth.trust-forwarded-headers:true}")
-    private boolean trustForwardedHeaders = true;
+    @Value("${app.auth.trust-forwarded-headers:false}")
+    private boolean trustForwardedHeaders = false;
 
     public AuthController(AuthService authService) {
         this.authService = authService;
@@ -141,37 +140,8 @@ public class AuthController {
         if (request == null) {
             return ClientMetadata.desconocido();
         }
-        String ip = resolverIpOrigen(request);
+        String ip = ClientIpResolver.resolverIpOrigen(request, trustForwardedHeaders);
         String userAgent = request.getHeader(HttpHeaders.USER_AGENT);
         return ClientMetadata.of(ip, userAgent);
-    }
-
-    private String resolverIpOrigen(HttpServletRequest request) {
-        String ipCandidata = null;
-        if (trustForwardedHeaders) {
-            String forwardedFor = request.getHeader(HEADER_X_FORWARDED_FOR);
-            if (forwardedFor != null && !forwardedFor.isBlank()) {
-                int commaIndex = forwardedFor.indexOf(',');
-                String primerIp = commaIndex >= 0 ? forwardedFor.substring(0, commaIndex) : forwardedFor;
-                if (!primerIp.isBlank()) {
-                    ipCandidata = primerIp;
-                }
-            }
-        }
-        if (ipCandidata == null || ipCandidata.isBlank()) {
-            ipCandidata = request.getRemoteAddr();
-        }
-        return sanitizarIp(ipCandidata);
-    }
-
-    private static String sanitizarIp(String ip) {
-        if (ip == null) {
-            return null;
-        }
-        String limpia = ip.replace("\r", "").replace("\n", "").trim();
-        if (limpia.isEmpty()) {
-            return null;
-        }
-        return limpia.length() > MAX_IP_LENGTH ? limpia.substring(0, MAX_IP_LENGTH) : limpia;
     }
 }

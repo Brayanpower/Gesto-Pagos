@@ -5,6 +5,7 @@ import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
+import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Service;
@@ -26,6 +27,7 @@ public class JwtService {
     private static final String DEFAULT_JWT_ISSUER = "sistema-bancario-core";
     private static final long DEFAULT_JWT_EXPIRATION_MS = 900_000L;
     private static final long MILLIS_PER_SECOND = 1_000L;
+    private static final int MIN_SECRET_KEY_BYTES = 32;
 
     @Value("${jwt.secret}")
     private String secretKey;
@@ -35,6 +37,17 @@ public class JwtService {
 
     @Value("${jwt.issuer:sistema-bancario-core}")
     private String jwtIssuer = DEFAULT_JWT_ISSUER;
+
+    @PostConstruct
+    void validarConfiguracion() {
+        if (secretKey == null || secretKey.isBlank()) {
+            throw new IllegalStateException("La propiedad jwt.secret es obligatoria y no puede estar vacia");
+        }
+        if (secretKey.getBytes(StandardCharsets.UTF_8).length < MIN_SECRET_KEY_BYTES) {
+            throw new IllegalStateException(
+                    "La propiedad jwt.secret debe tener al menos " + MIN_SECRET_KEY_BYTES + " bytes para HMAC-SHA256");
+        }
+    }
 
     public String extractUsername(String token) {
         return extractClaim(token, Claims::getSubject);
@@ -111,7 +124,7 @@ public class JwtService {
     }
 
     private boolean isIssuerValid(Claims claims) {
-        if (jwtIssuer == null || jwtIssuer.isBlank() || claims.getIssuer() == null) {
+        if (jwtIssuer == null || jwtIssuer.isBlank()) {
             return true;
         }
         return jwtIssuer.trim().equals(claims.getIssuer());

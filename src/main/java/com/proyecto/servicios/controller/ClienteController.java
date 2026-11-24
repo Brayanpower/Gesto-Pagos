@@ -4,11 +4,15 @@ import com.proyecto.servicios.model.GenericResponse;
 import com.proyecto.servicios.model.banco.ClienteRegistroRequest;
 import com.proyecto.servicios.model.banco.ClienteResponse;
 import com.proyecto.servicios.model.banco.ClienteUpdateRequest;
+import com.proyecto.servicios.security.ClientIpResolver;
+import com.proyecto.servicios.security.PublicEndpointRateLimiter;
 import com.proyecto.servicios.service.ClienteService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -23,14 +27,25 @@ import java.util.List;
 public class ClienteController {
 
     private final ClienteService clienteService;
+    private final PublicEndpointRateLimiter publicEndpointRateLimiter;
 
-    public ClienteController(ClienteService clienteService) {
+    @Value("${app.auth.trust-forwarded-headers:false}")
+    private boolean trustForwardedHeaders = false;
+
+    public ClienteController(
+            ClienteService clienteService,
+            PublicEndpointRateLimiter publicEndpointRateLimiter) {
         this.clienteService = clienteService;
+        this.publicEndpointRateLimiter = publicEndpointRateLimiter;
     }
 
     @PostMapping(produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)
     @Operation(summary = "Onboarding de Cliente Bancario", description = "Registro público: crea Cliente, Domicilio, su única Cuenta de Ahorro (en estatus PENDIENTE_REVISION) y Usuario ROLE_CLIENTE")
-    public ResponseEntity<ClienteResponse> registrarCliente(@Valid @RequestBody ClienteRegistroRequest request) {
+    public ResponseEntity<ClienteResponse> registrarCliente(
+            @Valid @RequestBody ClienteRegistroRequest request,
+            HttpServletRequest httpRequest) {
+        String ipOrigen = ClientIpResolver.resolverIpOrigen(httpRequest, trustForwardedHeaders);
+        publicEndpointRateLimiter.verificarLimiteOnboarding(ipOrigen);
         return new ResponseEntity<>(clienteService.registrarCliente(request), HttpStatus.CREATED);
     }
 

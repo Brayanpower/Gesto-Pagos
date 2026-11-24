@@ -2,11 +2,15 @@ package com.proyecto.servicios.controller;
 
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.model.GenericResponse;
+import com.proyecto.servicios.security.ClientIpResolver;
+import com.proyecto.servicios.security.PublicEndpointRateLimiter;
 import com.proyecto.servicios.service.CatalogoService;
 import com.proyecto.servicios.service.GestoPagoImagenService;
 import com.proyecto.servicios.service.GestoPagoImagenService.ImagenRecurso;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.CacheControl;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -27,12 +31,18 @@ public class CatalogoController {
 
     private final CatalogoService catalogoService;
     private final GestoPagoImagenService gestoPagoImagenService;
+    private final PublicEndpointRateLimiter publicEndpointRateLimiter;
+
+    @Value("${app.auth.trust-forwarded-headers:false}")
+    private boolean trustForwardedHeaders = false;
 
     public CatalogoController(
             CatalogoService catalogoService,
-            GestoPagoImagenService gestoPagoImagenService) {
+            GestoPagoImagenService gestoPagoImagenService,
+            PublicEndpointRateLimiter publicEndpointRateLimiter) {
         this.catalogoService = catalogoService;
         this.gestoPagoImagenService = gestoPagoImagenService;
+        this.publicEndpointRateLimiter = publicEndpointRateLimiter;
     }
 
     @GetMapping(value = "/gestopago/catalogo", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -50,13 +60,21 @@ public class CatalogoController {
 
     @GetMapping(value = "/gestopago/servicios/{idServicio}/logo")
     @Operation(summary = "Obtener logo PNG del servicio GestoPago", description = "Descarga de forma segura el logo del servicio desde GestoPago usando autenticación del servidor")
-    public ResponseEntity<byte[]> obtenerLogoServicio(@PathVariable("idServicio") String idServicio) {
+    public ResponseEntity<byte[]> obtenerLogoServicio(
+            @PathVariable("idServicio") String idServicio,
+            HttpServletRequest httpRequest) {
+        String ipOrigen = ClientIpResolver.resolverIpOrigen(httpRequest, trustForwardedHeaders);
+        publicEndpointRateLimiter.verificarLimiteImagenes(ipOrigen);
         return construirRespuestaImagen(gestoPagoImagenService.obtenerLogoServicio(idServicio));
     }
 
     @GetMapping(value = "/gestopago/servicios/{idServicio}/referencia")
     @Operation(summary = "Obtener imagen de ayuda/referencia del servicio GestoPago", description = "Descarga la imagen guía de referencia del servicio cuando está disponible en GestoPago")
-    public ResponseEntity<byte[]> obtenerImagenReferencia(@PathVariable("idServicio") String idServicio) {
+    public ResponseEntity<byte[]> obtenerImagenReferencia(
+            @PathVariable("idServicio") String idServicio,
+            HttpServletRequest httpRequest) {
+        String ipOrigen = ClientIpResolver.resolverIpOrigen(httpRequest, trustForwardedHeaders);
+        publicEndpointRateLimiter.verificarLimiteImagenes(ipOrigen);
         return construirRespuestaImagen(gestoPagoImagenService.obtenerImagenReferencia(idServicio));
     }
 

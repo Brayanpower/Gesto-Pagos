@@ -6,6 +6,8 @@
 spring.cloud.config.enabled=false
 spring.jackson.time-zone=${APP_TIMEZONE:America/Mexico_City}
 server.port=${PORT:8080}
+# En Render o detras de un proxy TLS confiable usar SERVER_FORWARD_HEADERS_STRATEGY=framework
+server.forward-headers-strategy=${SERVER_FORWARD_HEADERS_STRATEGY:none}
 
 # ----------------------------------------------------------------------
 # PostgreSQL
@@ -32,7 +34,11 @@ app.auth.max-failed-attempts=${AUTH_MAX_FAILED_ATTEMPTS:5}
 app.auth.lockout-minutes=${AUTH_LOCKOUT_MINUTES:15}
 app.auth.rate-limit.max-attempts=${AUTH_RATE_LIMIT_MAX_ATTEMPTS:15}
 app.auth.rate-limit.window-seconds=${AUTH_RATE_LIMIT_WINDOW_SECONDS:60}
-app.auth.trust-forwarded-headers=${AUTH_TRUST_FORWARDED_HEADERS:true}
+app.auth.trust-forwarded-headers=${AUTH_TRUST_FORWARDED_HEADERS:false}
+app.rate-limit.onboarding.max-attempts=${RATE_LIMIT_ONBOARDING_MAX_ATTEMPTS:5}
+app.rate-limit.onboarding.window-seconds=${RATE_LIMIT_ONBOARDING_WINDOW_SECONDS:300}
+app.rate-limit.images.max-attempts=${RATE_LIMIT_IMAGES_MAX_ATTEMPTS:60}
+app.rate-limit.images.window-seconds=${RATE_LIMIT_IMAGES_WINDOW_SECONDS:60}
 app.auth.totp.issuer=${AUTH_TOTP_ISSUER:SistemaBancario}
 app.auth.totp.challenge-minutes=${AUTH_TOTP_CHALLENGE_MINUTES:5}
 app.auth.totp.max-attempts=${AUTH_TOTP_MAX_ATTEMPTS:3}
@@ -85,7 +91,10 @@ gestopago.catalogo.cron=${GESTOPAGO_CATALOGO_CRON:0 0 6 * * *}
 gestopago.catalogo.startup-delay-ms=${GESTOPAGO_CATALOGO_STARTUP_DELAY_MS:3000}
 spring.data.mongodb.uri=${MONGODB_URI}
 
-# Actuator & Logging (sin exponer detalles sensibles)
+# Actuator, OpenAPI & Logging (sin exponer detalles sensibles)
+springdoc.swagger-ui.enabled=${SWAGGER_ENABLED:false}
+springdoc.api-docs.enabled=${SWAGGER_ENABLED:false}
+app.security.swagger-public=${SWAGGER_PUBLIC:false}
 management.endpoints.web.exposure.include=health,info
 management.endpoint.health.show-details=when_authorized
 logging.level.com.proyecto.servicios=INFO
