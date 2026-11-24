@@ -28,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -45,13 +47,17 @@ class RefreshTokenServiceTest {
     @Mock
     private UsuarioRepository usuarioRepository;
 
+    @Mock
+    private LoginAuditService loginAuditService;
+
     private RefreshTokenService service;
     private Usuario usuario;
     private Cliente cliente;
 
     @BeforeEach
     void setUp() {
-        service = new RefreshTokenService(refreshTokenRepository, usuarioRepository, REFRESH_EXPIRATION_MS);
+        service = new RefreshTokenService(
+                refreshTokenRepository, usuarioRepository, loginAuditService, REFRESH_EXPIRATION_MS);
 
         cliente = new Cliente();
         cliente.setId(50L);
@@ -164,6 +170,13 @@ class RefreshTokenServiceTest {
         assertEquals(1L, usuario.getTokenVersion());
         verify(usuarioRepository).save(usuario);
         verify(refreshTokenRepository).revocarPorFamiliaId("fam-comprometida");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario),
+                eq("cliente@banco.com"),
+                eq(LoginAuditService.EVENTO_REFRESH_REUSO),
+                eq(false),
+                any(ClientMetadata.class),
+                anyString());
     }
 
     @Test
@@ -233,10 +246,13 @@ class RefreshTokenServiceTest {
         String hash = service.sha256Hex(raw);
 
         RefreshToken activo = new RefreshToken();
+        activo.setUsuario(usuario);
         activo.setRevocado(false);
         when(refreshTokenRepository.findWithUsuarioByTokenHash(hash)).thenReturn(Optional.of(activo));
 
-        service.revocarToken(raw);
+        Optional<Usuario> revocado = service.revocarToken(raw);
+        assertTrue(revocado.isPresent());
+        assertEquals(usuario, revocado.get());
         assertTrue(activo.isRevocado());
         verify(refreshTokenRepository).save(activo);
 
@@ -244,7 +260,7 @@ class RefreshTokenServiceTest {
         service.revocarToken(raw);
         verify(refreshTokenRepository, times(1)).save(activo);
 
-        service.revocarToken(null);
+        assertTrue(service.revocarToken(null).isEmpty());
         service.revocarTodasLasSesiones(10L);
         verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
         service.revocarTodasLasSesiones(null);

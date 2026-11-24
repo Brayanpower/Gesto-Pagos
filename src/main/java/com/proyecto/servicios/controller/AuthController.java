@@ -1,5 +1,6 @@
 package com.proyecto.servicios.controller;
 
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.model.GenericResponse;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
@@ -14,6 +15,7 @@ import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpHeaders;
@@ -37,8 +39,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class AuthController {
 
     private static final String HEADER_X_FORWARDED_FOR = "X-Forwarded-For";
+    private static final int MAX_PAGE_SIZE = 100;
+    private static final int MAX_IP_LENGTH = 64;
 
     private final AuthService authService;
+
+    @Value("${app.auth.trust-forwarded-headers:true}")
+    private boolean trustForwardedHeaders = true;
 
     public AuthController(AuthService authService) {
         this.authService = authService;
@@ -113,6 +120,12 @@ public class AuthController {
             @RequestParam(value = "correo", required = false) String correo,
             @RequestParam(value = "page", defaultValue = "0") int page,
             @RequestParam(value = "size", defaultValue = "20") int size) {
+        if (page < 0) {
+            throw new ReglaNegocioException("El numero de pagina no puede ser negativo.");
+        }
+        if (size < 1 || size > MAX_PAGE_SIZE) {
+            throw new ReglaNegocioException("El tamano de pagina debe estar entre 1 y " + MAX_PAGE_SIZE + ".");
+        }
         Pageable pageable = PageRequest.of(page, size);
         return ResponseEntity.ok(authService.consultarAuditoria(correo, pageable));
     }
@@ -134,14 +147,31 @@ public class AuthController {
     }
 
     private String resolverIpOrigen(HttpServletRequest request) {
-        String forwardedFor = request.getHeader(HEADER_X_FORWARDED_FOR);
-        if (forwardedFor != null && !forwardedFor.isBlank()) {
-            int commaIndex = forwardedFor.indexOf(',');
-            String primerIp = commaIndex >= 0 ? forwardedFor.substring(0, commaIndex) : forwardedFor;
-            if (!primerIp.isBlank()) {
-                return primerIp.trim();
+        String ipCandidata = null;
+        if (trustForwardedHeaders) {
+            String forwardedFor = request.getHeader(HEADER_X_FORWARDED_FOR);
+            if (forwardedFor != null && !forwardedFor.isBlank()) {
+                int commaIndex = forwardedFor.indexOf(',');
+                String primerIp = commaIndex >= 0 ? forwardedFor.substring(0, commaIndex) : forwardedFor;
+                if (!primerIp.isBlank()) {
+                    ipCandidata = primerIp;
+                }
             }
         }
-        return request.getRemoteAddr();
+        if (ipCandidata == null || ipCandidata.isBlank()) {
+            ipCandidata = request.getRemoteAddr();
+        }
+        return sanitizarIp(ipCandidata);
+    }
+
+    private static String sanitizarIp(String ip) {
+        if (ip == null) {
+            return null;
+        }
+        String limpia = ip.replace("\r", "").replace("\n", "").trim();
+        if (limpia.isEmpty()) {
+            return null;
+        }
+        return limpia.length() > MAX_IP_LENGTH ? limpia.substring(0, MAX_IP_LENGTH) : limpia;
     }
 }

@@ -31,6 +31,7 @@ import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 @Slf4j
@@ -105,8 +106,10 @@ public class AuthServiceImpl implements AuthService {
         try {
             usuario = mfaService.validarDesafioYCodigo(request.getChallengeToken(), request.getCodigo());
         } catch (BadCredentialsException ex) {
+            Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(request.getChallengeToken()).orElse(null);
+            String correoAuditoria = usuarioDesafio != null ? usuarioDesafio.getCorreo() : CORREO_DESCONOCIDO;
             loginAuditService.registrarEvento(
-                    null, CORREO_DESCONOCIDO, LoginAuditService.EVENTO_TOTP_INVALIDO, false, meta,
+                    usuarioDesafio, correoAuditoria, LoginAuditService.EVENTO_TOTP_INVALIDO, false, meta,
                     "Verificacion de desafio TOTP fallida");
             throw ex;
         }
@@ -138,11 +141,12 @@ public class AuthServiceImpl implements AuthService {
     @Transactional
     public void logout(String authorizationHeader, RefreshTokenRequest request, ClientMetadata metadata) {
         ClientMetadata meta = normalizarMetadata(metadata);
-        if (request != null && tieneTexto(request.getRefreshToken())) {
-            refreshTokenService.revocarToken(request.getRefreshToken());
-        }
+        Optional<Usuario> usuarioDesdeRefresh = (request != null && tieneTexto(request.getRefreshToken()))
+                ? refreshTokenService.revocarToken(request.getRefreshToken())
+                : Optional.empty();
 
-        Usuario usuario = invalidarJwtSiEsValido(authorizationHeader);
+        Usuario usuarioJwt = invalidarJwtSiEsValido(authorizationHeader);
+        Usuario usuario = usuarioJwt != null ? usuarioJwt : usuarioDesdeRefresh.orElse(null);
         String correo = usuario != null ? usuario.getCorreo() : CORREO_DESCONOCIDO;
         loginAuditService.registrarEvento(
                 usuario, correo, LoginAuditService.EVENTO_LOGOUT, true, meta,

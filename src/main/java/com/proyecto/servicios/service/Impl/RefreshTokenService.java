@@ -20,6 +20,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Base64;
 import java.util.HexFormat;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -35,14 +36,17 @@ public class RefreshTokenService {
 
     private final RefreshTokenRepository refreshTokenRepository;
     private final UsuarioRepository usuarioRepository;
+    private final LoginAuditService loginAuditService;
     private final long refreshExpirationMs;
 
     public RefreshTokenService(
             RefreshTokenRepository refreshTokenRepository,
             UsuarioRepository usuarioRepository,
+            LoginAuditService loginAuditService,
             @Value("${jwt.refresh-expiration-ms:604800000}") long refreshExpirationMs) {
         this.refreshTokenRepository = refreshTokenRepository;
         this.usuarioRepository = usuarioRepository;
+        this.loginAuditService = loginAuditService;
         this.refreshExpirationMs = refreshExpirationMs > 0L ? refreshExpirationMs : DEFAULT_REFRESH_EXPIRATION_MS;
     }
 
@@ -72,7 +76,7 @@ public class RefreshTokenService {
                 .orElseThrow(() -> new BadCredentialsException(MSG_REFRESH_INVALIDO));
 
         if (actual.isRevocado()) {
-            manejarReusoDetectado(actual);
+            manejarReusoDetectado(actual, metadata);
             throw new BadCredentialsException(MSG_REFRESH_INVALIDO);
         }
 
@@ -99,18 +103,19 @@ public class RefreshTokenService {
     }
 
     @Transactional
-    public void revocarToken(String rawRefreshToken) {
+    public Optional<Usuario> revocarToken(String rawRefreshToken) {
         if (rawRefreshToken == null || rawRefreshToken.isBlank()) {
-            return;
+            return Optional.empty();
         }
         String tokenHash = sha256Hex(rawRefreshToken.trim());
-        refreshTokenRepository.findWithUsuarioByTokenHash(tokenHash)
-                .ifPresent(token -> {
-                    if (!token.isRevocado()) {
-                        token.setRevocado(true);
-                        refreshTokenRepository.save(token);
-                    }
-                });
+        Optional<RefreshToken> tokenOpt = refreshTokenRepository.findWithUsuarioByTokenHash(tokenHash);
+        tokenOpt.ifPresent(token -> {
+            if (!token.isRevocado()) {
+                token.setRevocado(true);
+                refreshTokenRepository.save(token);
+            }
+        });
+        return tokenOpt.map(RefreshToken::getUsuario);
     }
 
     @Transactional
@@ -134,13 +139,21 @@ public class RefreshTokenService {
         }
     }
 
-    private void manejarReusoDetectado(RefreshToken actual) {
+    private void manejarReusoDetectado(RefreshToken actual, ClientMetadata metadata) {
         Usuario usuario = actual.getUsuario();
         if (usuario != null) {
             usuario.incrementarTokenVersion();
             usuarioRepository.save(usuario);
         }
         refreshTokenRepository.revocarPorFamiliaId(actual.getFamiliaId());
+        String correo = usuario != null ? usuario.getCorreo() : null;
+        loginAuditService.registrarEvento(
+                usuario,
+                correo,
+                LoginAuditService.EVENTO_REFRESH_REUSO,
+                false,
+                metadata,
+                "Reuso detectado de refresh token; familia revocada");
         log.warn("Reuso detectado de refresh token para familiaId={}", actual.getFamiliaId());
     }
 

@@ -127,6 +127,16 @@ public class MfaService {
         return usuario;
     }
 
+    @Transactional(readOnly = true)
+    public Optional<Usuario> buscarUsuarioPorChallengeToken(String rawChallengeToken) {
+        if (rawChallengeToken == null || rawChallengeToken.isBlank()) {
+            return Optional.empty();
+        }
+        String challengeHash = sha256Hex(rawChallengeToken);
+        return mfaChallengeRepository.findWithUsuarioByChallengeHash(challengeHash)
+                .map(MfaChallenge::getUsuario);
+    }
+
     /**
      * Valida directamente el codigo TOTP durante el login en un solo paso cuando el usuario ya tiene TOTP habilitado.
      */
