@@ -236,7 +236,7 @@ public class TransaccionPersistenceService {
     }
 
     private TransaccionServicio buscarTransaccion(Long transaccionId) {
-        return transaccionRepository.findById(transaccionId)
+        return transaccionRepository.findByIdForUpdate(transaccionId)
                 .orElseThrow(() -> new ResourceNotFoundException(TX_NO_ENCONTRADA + transaccionId));
     }
 

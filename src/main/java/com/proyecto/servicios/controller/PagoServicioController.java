@@ -1,6 +1,7 @@
 package com.proyecto.servicios.controller;
 
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.HistorialCompraResponse;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.PagoServicioResponse;
@@ -101,6 +102,12 @@ public class PagoServicioController {
             @Parameter(description = "Dirección de ordenamiento (ASC o DESC)", example = "DESC")
             @RequestParam(value = "sortDir", defaultValue = "DESC") String sortDir) {
 
+        if (page < 0) {
+            throw new ReglaNegocioException("El numero de pagina no puede ser negativo.");
+        }
+        if (size < 1 || size > 100) {
+            throw new ReglaNegocioException("El tamano de pagina debe estar entre 1 y 100.");
+        }
         Sort.Direction direction = "ASC".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
         Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
         PageResponse<HistorialCompraResponse> historial = pagoServicioService.obtenerHistorialCompras(

@@ -155,5 +155,28 @@ class GestoPagoImagenServiceImplTest {
         assertThrows(ReglaNegocioException.class, () -> service.obtenerLogoServicio("abc"));
         assertThrows(ReglaNegocioException.class, () -> service.obtenerImagenReferencia("../79"));
     }
+
+    @Test
+    @DisplayName("Errores transitorios 5xx NO se cachean como miss negativo; 404 si se cachea")
+    void obtenerImagenes_errorTransitorioNoSeCacheaY404SiSeCachea() {
+        when(tokenService.obtenerBearerTokenValido()).thenReturn("gp-jwt-123");
+
+        server.expect(requestTo(BASE_URL + "/sistema/images/gestopago/servicios/500.png"))
+                .andRespond(withStatus(HttpStatus.INTERNAL_SERVER_ERROR));
+        server.expect(requestTo(BASE_URL + "/sistema/images/gestopago/servicios/500.png"))
+                .andRespond(withSuccess(PNG_BYTES, MediaType.IMAGE_PNG));
+        server.expect(requestTo(BASE_URL + "/sistema/images/gestopago/referencias/404.jpg"))
+                .andRespond(withResourceNotFound());
+
+        assertTrue(service.obtenerLogoServicio("500").isEmpty());
+        Optional<ImagenRecurso> recuperado = service.obtenerLogoServicio("500");
+        assertTrue(recuperado.isPresent());
+        assertArrayEquals(PNG_BYTES, recuperado.get().contenido());
+
+        assertTrue(service.obtenerImagenReferencia("404").isEmpty());
+        assertTrue(service.obtenerImagenReferencia("404").isEmpty());
+
+        server.verify();
+    }
 }
 

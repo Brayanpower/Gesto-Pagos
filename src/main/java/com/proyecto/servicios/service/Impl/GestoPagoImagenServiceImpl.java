@@ -17,9 +17,12 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
@@ -55,7 +58,7 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
             @Value("${gestopago.auth.api-key:}") String apiKey,
             @Value("${gestopago.images.connect-timeout-ms:5000}") int connectTimeoutMs,
             @Value("${gestopago.images.read-timeout-ms:10000}") int readTimeoutMs) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        SimpleClientHttpRequestFactory requestFactory = new NoRedirectSimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(Duration.ofMillis(Math.max(500, connectTimeoutMs)));
         requestFactory.setReadTimeout(Duration.ofMillis(Math.max(500, readTimeoutMs)));
 
@@ -101,18 +104,20 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
             return Optional.ofNullable(enCache.recurso());
         }
 
-        Optional<ImagenRecurso> descargada = descargarConReintentoAuth(
+        ResultadoDescarga resultado = descargarConReintentoAuth(
                 pathTemplate, idServicio, mediaTypePorDefecto);
 
-        if (descargada.isPresent()) {
-            guardarEnCache(cacheKey, descargada.get(), ahora.plus(CACHE_HIT_TTL));
-        } else {
+        if (resultado.estado() == EstadoDescarga.FOUND && resultado.recurso() != null) {
+            guardarEnCache(cacheKey, resultado.recurso(), ahora.plus(CACHE_HIT_TTL));
+            return Optional.of(resultado.recurso());
+        }
+        if (resultado.estado() == EstadoDescarga.NOT_FOUND) {
             guardarEnCache(cacheKey, null, ahora.plus(CACHE_MISS_TTL));
         }
-        return descargada;
+        return Optional.empty();
     }
 
-    private Optional<ImagenRecurso> descargarConReintentoAuth(
+    private ResultadoDescarga descargarConReintentoAuth(
             String pathTemplate,
             String idServicio,
             MediaType mediaTypePorDefecto) {
@@ -124,15 +129,15 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
             return reintentarConTokenRenovado(pathTemplate, idServicio, mediaTypePorDefecto);
         } catch (HttpClientErrorException.NotFound ex) {
             log.debug("Imagen GestoPago no encontrada para servicio={}", idServicio);
-            return Optional.empty();
+            return ResultadoDescarga.notFound();
         } catch (ProveedorExternoException | RestClientException ex) {
             log.warn("No se pudo obtener imagen GestoPago para servicio={} [{}]: {}",
                     idServicio, ex.getClass().getSimpleName(), LogSanitizer.sanitize(ex.getMessage()));
-            return Optional.empty();
+            return ResultadoDescarga.transientError();
         }
     }
 
-    private Optional<ImagenRecurso> reintentarConTokenRenovado(
+    private ResultadoDescarga reintentarConTokenRenovado(
             String pathTemplate,
             String idServicio,
             MediaType mediaTypePorDefecto) {
@@ -141,21 +146,21 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
             String tokenRenovado = gestoPagoTokenService.obtenerBearerTokenValido();
             return ejecutarDescarga(pathTemplate, idServicio, tokenRenovado, mediaTypePorDefecto);
         } catch (HttpClientErrorException.NotFound ex) {
-            return Optional.empty();
+            return ResultadoDescarga.notFound();
         } catch (ProveedorExternoException | RestClientException ex) {
             log.warn("Fallo al reintentar descarga de imagen GestoPago para servicio={} [{}]",
                     idServicio, ex.getClass().getSimpleName());
-            return Optional.empty();
+            return ResultadoDescarga.transientError();
         }
     }
 
-    private Optional<ImagenRecurso> ejecutarDescarga(
+    private ResultadoDescarga ejecutarDescarga(
             String pathTemplate,
             String idServicio,
             String bearerToken,
             MediaType mediaTypePorDefecto) {
         if (bearerToken == null || bearerToken.isBlank()) {
-            return Optional.empty();
+            return ResultadoDescarga.transientError();
         }
 
         ResponseEntity<byte[]> response = restClient.get()
@@ -165,22 +170,24 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
                 .toEntity(byte[].class);
 
         if (!response.getStatusCode().is2xxSuccessful()) {
-            return Optional.empty();
+            return response.getStatusCode().is5xxServerError()
+                    ? ResultadoDescarga.transientError()
+                    : ResultadoDescarga.notFound();
         }
 
         byte[] body = response.getBody();
         if (body == null || body.length == 0 || body.length > MAX_IMAGE_BYTES) {
-            return Optional.empty();
+            return ResultadoDescarga.notFound();
         }
 
         MediaType contentType = resolverContentType(response.getHeaders().getContentType(), mediaTypePorDefecto);
         if (contentType == null) {
             log.warn("Contenido no valido recibido desde GestoPago para servicio={} (Content-Type={})",
                     idServicio, response.getHeaders().getContentType());
-            return Optional.empty();
+            return ResultadoDescarga.notFound();
         }
 
-        return Optional.of(new ImagenRecurso(body, contentType));
+        return ResultadoDescarga.found(new ImagenRecurso(body, contentType));
     }
 
     private void aplicarHeadersAutenticacion(HttpHeaders headers, String bearerToken) {
@@ -240,7 +247,12 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
         if (baseUrl == null || baseUrl.isBlank()) {
             return "https://gestopago.portalventas.net";
         }
-        return baseUrl.trim();
+        String limpia = baseUrl.trim();
+        String lower = limpia.toLowerCase(Locale.ROOT);
+        if (!lower.startsWith("https://") && !lower.startsWith("http://")) {
+            throw new IllegalArgumentException("La URL base de GestoPago debe iniciar con https:// o http://");
+        }
+        return limpia;
     }
 
     private static String normalizarApiKey(String apiKey) {
@@ -250,6 +262,34 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
         return apiKey.trim();
     }
 
+    private enum EstadoDescarga {
+        FOUND,
+        NOT_FOUND,
+        TRANSIENT_ERROR
+    }
+
+    private record ResultadoDescarga(EstadoDescarga estado, ImagenRecurso recurso) {
+        private static ResultadoDescarga found(ImagenRecurso recurso) {
+            return new ResultadoDescarga(EstadoDescarga.FOUND, recurso);
+        }
+
+        private static ResultadoDescarga notFound() {
+            return new ResultadoDescarga(EstadoDescarga.NOT_FOUND, null);
+        }
+
+        private static ResultadoDescarga transientError() {
+            return new ResultadoDescarga(EstadoDescarga.TRANSIENT_ERROR, null);
+        }
+    }
+
     private record CacheEntry(ImagenRecurso recurso, Instant expiraEn) {
+    }
+
+    private static class NoRedirectSimpleClientHttpRequestFactory extends SimpleClientHttpRequestFactory {
+        @Override
+        protected void prepareConnection(HttpURLConnection connection, String httpMethod) throws IOException {
+            super.prepareConnection(connection, httpMethod);
+            connection.setInstanceFollowRedirects(false);
+        }
     }
 }

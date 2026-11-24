@@ -414,6 +414,57 @@ class PagoServicioServiceImplTest {
         ));
     }
 
+    @Test
+    @DisplayName("Idempotency-Key reutilizada con telefono o referencia distintos lanza DuplicateResourceException (409)")
+    void procesarPagoServicio_idempotencyKeyTelefonoOReferenciaDistintos_lanzaConflicto() {
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
+        TransaccionServicio previa = transaccionMock(EstatusTransaccion.EXITOSA);
+        previa.setCliente(cliente);
+        previa.setTelefono("5512345678");
+        when(persistenceService.buscarPorClaveIdempotencia("idem-unica-002")).thenReturn(Optional.of(previa));
+
+        SendTxRequest reqOtroTel = SendTxRequest.builder()
+                .numeroCuenta("1234567890")
+                .idServicio(2284)
+                .idProducto(14302)
+                .montoPago(new BigDecimal("100.00"))
+                .telefono("5599887766")
+                .build();
+
+        assertThrows(DuplicateResourceException.class,
+                () -> servicio.procesarPagoServicio(reqOtroTel, "idem-unica-002"));
+    }
+
+    @Test
+    @DisplayName("Job programado de conciliacion rescata transacciones huerfanas en EN_PROCESO")
+    void ejecutarJobConciliacionPendientes_rescataHuerfanasEnProceso() {
+        ReflectionTestUtils.setField(servicio, "enProcesoTimeoutMinutes", 3L);
+        TransaccionServicio huerfana = transaccionMock(EstatusTransaccion.EN_PROCESO);
+        huerfana.setCliente(cliente);
+
+        when(transaccionRepository.findTop20ByEstatusAndFechaCreacionBeforeOrderByFechaCreacionAsc(
+                eq(EstatusTransaccion.EN_PROCESO), any(LocalDateTime.class)))
+                .thenReturn(List.of(huerfana));
+        when(transaccionRepository.findTop20ByEstatusAndIntentosConciliacionLessThanOrderByFechaCreacionAsc(
+                EstatusTransaccion.PENDIENTE_CONCILIACION, 5))
+                .thenReturn(List.of());
+
+        GestoPagoTxResult aprobada = GestoPagoTxResult.builder()
+                .estado(EstadoProveedor.APROBADA)
+                .codigo("01")
+                .mensaje("Aplicada")
+                .idTx("TX-RESCATE")
+                .build();
+        when(gestoPagoSendTxService.verificarTransaccion(any())).thenReturn(aprobada);
+        when(persistenceService.confirmarExito(1L, aprobada)).thenReturn(transaccionMock(EstatusTransaccion.EXITOSA));
+
+        servicio.ejecutarJobConciliacionPendientes();
+
+        verify(gestoPagoSendTxService, times(1)).verificarTransaccion(any());
+        verify(persistenceService, times(1)).confirmarExito(1L, aprobada);
+    }
+
     private static CatalogoProducto productoRecargaFija(String precio) {
         CatalogoProducto prod = new CatalogoProducto();
         prod.setIdServicio("2284");

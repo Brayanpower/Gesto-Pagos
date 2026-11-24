@@ -4,6 +4,7 @@ import com.proyecto.servicios.client.GestoPagoCatProduct;
 import com.proyecto.servicios.exception.GestoPagoCatProductException;
 import com.proyecto.servicios.model.gestopago.catproduct.GestoPagoCatProductResponse;
 import com.proyecto.servicios.service.CatalogoService;
+import com.proyecto.servicios.service.GestoPagoTokenService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -50,6 +51,9 @@ class GestoPagoCatProductServiceImplTest {
 
     @Mock
     private CatalogoService catalogoService;
+
+    @Mock
+    private GestoPagoTokenService gestoPagoTokenService;
 
     @InjectMocks
     private GestoPagoCatProductServiceImpl servicio;
@@ -156,5 +160,38 @@ class GestoPagoCatProductServiceImplTest {
     @DisplayName("Sin carga previa obtenerCatalogoCache lanza excepcion")
     void obtenerCatalogoCache_sinCarga_lanza() {
         assertThrows(GestoPagoCatProductException.class, () -> servicio.obtenerCatalogoCache());
+    }
+
+    @Test
+    @DisplayName("XML con DOCTYPE/XXE es rechazado por el parser seguro")
+    void obtenerCatalogoProductos_xmlConDoctypeXxe_rechaza() {
+        String xmlXxe = "<?xml version='1.0' encoding='UTF-8'?>"
+                + "<!DOCTYPE foo [ <!ENTITY xxe SYSTEM 'file:///etc/passwd'> ]>"
+                + "<RESPONSE><MENSAJE><CODIGO>01</CODIGO><TEXTO>&xxe;</TEXTO></MENSAJE></RESPONSE>";
+        when(gestoPagoCatProduct.getProductList()).thenReturn(ResponseEntity.ok(xmlXxe));
+
+        assertThrows(GestoPagoCatProductException.class, () -> servicio.obtenerCatalogoProductos());
+    }
+
+    @Test
+    @DisplayName("XML con codigo de error de negocio GestoPago es rechazado")
+    void obtenerCatalogoProductos_codigoErrorNegocio_rechaza() {
+        String xmlError = "<?xml version='1.0' encoding='UTF-8'?>"
+                + "<RESPONSE><MENSAJE><CODIGO>05</CODIGO><TEXTO>Error de autenticacion</TEXTO></MENSAJE>"
+                + "<PRODUCTOS><producto servicio='ABIB' producto='ABIB 100' idServicio='2284' idProducto='14302' precio='100.0'/></PRODUCTOS>"
+                + "</RESPONSE>";
+        when(gestoPagoCatProduct.getProductList()).thenReturn(ResponseEntity.ok(xmlError));
+
+        assertThrows(GestoPagoCatProductException.class, () -> servicio.obtenerCatalogoProductos());
+    }
+
+    @Test
+    @DisplayName("HTTP 401 invalida el token actual antes de reintentar")
+    void obtenerCatalogoProductos_http401_invalidaTokenActual() {
+        when(gestoPagoCatProduct.getProductList())
+                .thenReturn(ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("no auth"));
+
+        assertThrows(GestoPagoCatProductException.class, () -> servicio.obtenerCatalogoProductos());
+        verify(gestoPagoTokenService, times(3)).invalidarTokenActual();
     }
 }

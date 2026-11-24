@@ -2,21 +2,28 @@ package com.proyecto.servicios.repositorys.gestopago;
 
 import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.gestopago.TransaccionServicio;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
 @Repository
 public interface TransaccionServicioRepository extends JpaRepository<TransaccionServicio, Long>,
         JpaSpecificationExecutor<TransaccionServicio> {
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT t FROM TransaccionServicio t WHERE t.id = :id")
+    Optional<TransaccionServicio> findByIdForUpdate(@Param("id") Long id);
 
     @EntityGraph(attributePaths = {"cliente", "cuenta"})
     Optional<TransaccionServicio> findByClaveIdempotencia(String claveIdempotencia);
@@ -48,4 +55,11 @@ public interface TransaccionServicioRepository extends JpaRepository<Transaccion
 
     List<TransaccionServicio> findTop20ByEstatusAndIntentosConciliacionLessThanOrderByFechaCreacionAsc(
             EstatusTransaccion estatus, Integer maxIntentos);
+
+    List<TransaccionServicio> findTop20ByEstatusAndFechaCreacionBeforeOrderByFechaCreacionAsc(
+            EstatusTransaccion estatus, LocalDateTime limite);
+
+    boolean existsByCuentaIdAndEstatusIn(Long cuentaId, Collection<EstatusTransaccion> estatuses);
+
+    boolean existsByClienteIdAndEstatusIn(Long clienteId, Collection<EstatusTransaccion> estatuses);
 }

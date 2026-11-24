@@ -43,6 +43,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -85,6 +86,9 @@ public class PagoServicioServiceImpl implements PagoServicioService {
 
     @Value("${gestopago.tx.conciliacion.max-intentos:5}")
     private int maxIntentosConciliacion;
+
+    @Value("${gestopago.tx.conciliacion.en-proceso-timeout-minutes:3}")
+    private long enProcesoTimeoutMinutes = 3L;
 
     public PagoServicioServiceImpl(
             CatalogoService catalogoService,
@@ -198,6 +202,17 @@ public class PagoServicioServiceImpl implements PagoServicioService {
 
     @Scheduled(cron = "${gestopago.tx.conciliacion.cron:0 */5 * * * *}")
     public void ejecutarJobConciliacionPendientes() {
+        LocalDateTime limiteHuerfanas = LocalDateTime.now(ZoneId.systemDefault())
+                .minusMinutes(Math.max(1L, enProcesoTimeoutMinutes));
+        List<TransaccionServicio> huerfanasEnProceso = transaccionRepository
+                .findTop20ByEstatusAndFechaCreacionBeforeOrderByFechaCreacionAsc(
+                        EstatusTransaccion.EN_PROCESO, limiteHuerfanas);
+
+        if (!huerfanasEnProceso.isEmpty()) {
+            log.warn("Rescatando {} transacciones huerfanas en EN_PROCESO para conciliacion", huerfanasEnProceso.size());
+            conciliarLote(huerfanasEnProceso);
+        }
+
         List<TransaccionServicio> pendientes = transaccionRepository
                 .findTop20ByEstatusAndIntentosConciliacionLessThanOrderByFechaCreacionAsc(
                         EstatusTransaccion.PENDIENTE_CONCILIACION, maxIntentosConciliacion);
@@ -207,9 +222,20 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         }
 
         log.info("Iniciando proceso programado de conciliacion para {} transacciones pendientes", pendientes.size());
-        for (TransaccionServicio tx : pendientes) {
+        conciliarLote(pendientes);
+    }
+
+    private void conciliarLote(List<TransaccionServicio> transacciones) {
+        for (TransaccionServicio tx : transacciones) {
             try {
-                ejecutarConciliacionIndividual(tx);
+                TransaccionServicio resultado = ejecutarConciliacionIndividual(tx);
+                if (resultado != null
+                        && resultado.getEstatus() == EstatusTransaccion.PENDIENTE_CONCILIACION
+                        && resultado.getIntentosConciliacion() != null
+                        && resultado.getIntentosConciliacion() >= maxIntentosConciliacion) {
+                    log.error("ALERTA CONCILIACION: Transaccion upc={} alcanzo el maximo de intentos ({}) sin resolucion; requiere revision manual operativa",
+                            resultado.getUpc(), maxIntentosConciliacion);
+                }
             } catch (Exception ex) {
                 log.warn("Error al conciliar transaccion upc={}: {}", tx.getUpc(), ex.getClass().getSimpleName());
             }
@@ -488,7 +514,10 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         boolean mismosParametros = Objects.equals(existente.getNumeroCuenta(), numeroCuentaEfectivo)
                 && Objects.equals(existente.getIdServicio(), nuevoRequest.getIdServicio())
                 && Objects.equals(existente.getIdProducto(), nuevoRequest.getIdProducto())
-                && existente.getMonto().compareTo(nuevoRequest.getMontoPago()) == 0;
+                && existente.getMonto().compareTo(nuevoRequest.getMontoPago()) == 0
+                && coincideTelefonoIdempotente(existente.getTelefono(), nuevoRequest.getTelefono())
+                && Objects.equals(normalizarTextoOpcional(existente.getReferencia()),
+                normalizarTextoOpcional(nuevoRequest.getReferencia()));
 
         if (!mismosParametros) {
             throw new DuplicateResourceException(
@@ -515,6 +544,18 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         }
 
         return aPagoServicioResponse(existente, true);
+    }
+
+    private static boolean coincideTelefonoIdempotente(String telefonoExistente, String telefonoNuevo) {
+        String nuevoLimpio = normalizarTextoOpcional(telefonoNuevo);
+        if (nuevoLimpio.isEmpty()) {
+            return true;
+        }
+        return Objects.equals(normalizarTextoOpcional(telefonoExistente), nuevoLimpio);
+    }
+
+    private static String normalizarTextoOpcional(String valor) {
+        return valor == null ? "" : valor.trim();
     }
 
     private String resolverNumeroCuentaAhorro(String numeroCuentaRequest, Long clienteId) {
