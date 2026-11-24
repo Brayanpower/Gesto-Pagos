@@ -1,7 +1,7 @@
 plugins {
     id 'jacoco'
-    id 'io.spring.dependency-management' version '1.1.0'
-    id 'org.springframework.boot' version '3.3.6'//Versión de componentes de spring boot
+    id 'io.spring.dependency-management' version '1.1.7'
+    id 'org.springframework.boot' version '3.5.16'//Versión de componentes de spring boot
     id 'org.sonarqube' version '5.1.0.4882'
     id "org.owasp.dependencycheck" version "10.0.4"
     id 'com.github.ben-manes.versions' version '0.46.0'
@@ -20,11 +20,23 @@ repositories {
     mavenCentral()
 }
 
+ext {
+    set('springCloudVersion', '2025.0.3')
+    set('postgresql.version', '42.7.15')
+    set('commons-lang3.version', '3.22.0')
+    set('jackson-bom.version', '2.21.4')
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+}
+
 
 dependencies {
     //Spring Framework
-    implementation 'org.springframework.cloud:spring-cloud-config-client:4.1.4'
-    implementation 'org.springframework.cloud:spring-cloud-starter-openfeign:4.1.4'
+    implementation 'org.springframework.cloud:spring-cloud-starter-openfeign'
     implementation 'org.springframework.boot:spring-boot-starter-web'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
@@ -32,28 +44,41 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-mongodb'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     //Documentation y APIs
-
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.17'
     //Bases de datos
-    implementation 'org.postgresql:postgresql:42.7.3'
+    implementation 'org.postgresql:postgresql:42.7.15'
     implementation 'org.flywaydb:flyway-core'
     implementation 'org.flywaydb:flyway-database-postgresql'
-    implementation 'org.hibernate:hibernate-core:6.5.3.Final'
     //Seguridad
     implementation 'org.springframework.boot:spring-boot-starter-security'
-    implementation 'io.jsonwebtoken:jjwt-api:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.12.6'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.12.6'
-    //Utilerias Apache Commons
-    implementation 'org.apache.commons:commons-lang3:3.12.0'
-    implementation 'commons-io:commons-io:2.18.0'
-    implementation 'org.apache.httpcomponents.client5:httpclient5:5.4.1'
+    implementation 'io.jsonwebtoken:jjwt-api:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
+    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
+    //Mapeo y utilerias
     implementation 'org.mapstruct:mapstruct:1.6.3'
     //Mail-XML
-    implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.3'
+    implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.9'
     implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.0'
     //Lombok
     implementation 'org.projectlombok:lombok:1.18.46'
+
+    constraints {
+        implementation('org.apache.commons:commons-lang3:3.22.0') {
+            because 'Corrige CVE-2025-48924 (CWE-674 Uncontrolled Recursion)'
+        }
+        implementation('org.glassfish.jaxb:jaxb-core:4.0.9') {
+            because 'Corrige vulnerabilidad XXE (CWE-611) en jaxb-core < 4.0.5'
+        }
+        implementation('org.postgresql:postgresql:42.7.15') {
+            because 'Corrige CWE-770 y CWE-303 en postgresql < 42.7.12'
+        }
+        implementation('com.fasterxml.jackson.core:jackson-databind:2.21.4') {
+            because 'Fuerza version parcheada de Jackson frente a dependencias transitivas antiguas'
+        }
+        implementation('org.bouncycastle:bcprov-jdk18on:1.87') {
+            because 'Evita versiones vulnerables de BouncyCastle (< 1.79) si alguna dependencia transitiva la solicita'
+        }
+    }
 
     developmentOnly 'org.springframework.boot:spring-boot-devtools'
     compileOnly 'org.projectlombok:lombok:1.18.46'
@@ -66,7 +91,7 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'org.springframework.security:spring-security-test'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    testImplementation 'com.h2database:h2:2.2.220'
+    testImplementation 'com.h2database:h2'
 
 }
 
