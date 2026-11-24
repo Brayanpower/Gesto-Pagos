@@ -14,6 +14,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -35,6 +36,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -51,6 +53,7 @@ class UsuarioServiceImplTest {
     @Mock private ClienteRepository clienteRepository;
     @Mock private UsuarioMapper usuarioMapper;
     @Mock private PasswordEncoder passwordEncoder;
+    @Mock private RefreshTokenRepository refreshTokenRepository;
 
     @InjectMocks
     private UsuarioServiceImpl servicio;
@@ -61,7 +64,7 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Creacion exitosa: cifra la contrasena, asigna rol por defecto y activo en servidor")
+    @DisplayName("Creacion exitosa de ROLE_CLIENTE vinculado a cliente existente")
     void crear_exito_cifraPasswordYAsignaRolPorDefecto() {
         UsuarioCreacionRequest request = creacionValida();
         Cliente cliente = clienteActivo(1L);
@@ -92,8 +95,50 @@ class UsuarioServiceImplTest {
     }
 
     @Test
+    @DisplayName("Creacion de ROLE_ADMIN puro sin clienteId es permitida y deja cliente en null")
+    void crear_adminSinCliente_exito() {
+        UsuarioCreacionRequest request = new UsuarioCreacionRequest();
+        request.setCorreo("nuevo.admin@banco.com");
+        request.setPassword("Admin123@");
+        request.setRol("ROLE_ADMIN");
+
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(passwordEncoder.encode("Admin123@")).thenReturn("$2a$10$adminHash");
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> {
+            Usuario u = inv.getArgument(0);
+            u.setId(2L);
+            return u;
+        });
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioResponse response = servicio.crear(request);
+
+        assertEquals(0, response.getCodigo());
+        ArgumentCaptor<Usuario> captor = ArgumentCaptor.forClass(Usuario.class);
+        verify(usuarioRepository).save(captor.capture());
+        assertNull(captor.getValue().getCliente());
+        assertEquals("ROLE_ADMIN", captor.getValue().getRol());
+    }
+
+    @Test
+    @DisplayName("Creacion de ROLE_ADMIN con clienteId lanza ReglaNegocioException")
+    void crear_adminConCliente_lanzaReglaNegocio() {
+        UsuarioCreacionRequest request = creacionValida();
+        request.setRol("ROLE_ADMIN");
+
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.crear(request));
+        verify(usuarioRepository, never()).save(any(Usuario.class));
+    }
+
+    @Test
     @DisplayName("Creacion con cliente inexistente lanza ResourceNotFoundException")
     void crear_clienteInexistente_lanzaExcepcion() {
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
         when(clienteRepository.findById(1L)).thenReturn(Optional.empty());
 
         assertThrows(ResourceNotFoundException.class, () -> servicio.crear(creacionValida()));
@@ -105,6 +150,8 @@ class UsuarioServiceImplTest {
     void crear_clienteInactivo_lanzaReglaNegocio() {
         Cliente cliente = clienteActivo(1L);
         cliente.setActivo(false);
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
         when(clienteRepository.findById(1L)).thenReturn(Optional.of(cliente));
 
         assertThrows(ReglaNegocioException.class, () -> servicio.crear(creacionValida()));
@@ -114,7 +161,6 @@ class UsuarioServiceImplTest {
     @Test
     @DisplayName("Creacion con correo duplicado lanza DuplicateResourceException")
     void crear_correoDuplicado_lanzaExcepcion() {
-        when(clienteRepository.findById(1L)).thenReturn(Optional.of(clienteActivo(1L)));
         when(usuarioRepository.existsByCorreo(anyString())).thenReturn(true);
 
         assertThrows(DuplicateResourceException.class, () -> servicio.crear(creacionValida()));
@@ -136,6 +182,7 @@ class UsuarioServiceImplTest {
 
     @Test
     @DisplayName("Busqueda combinada devuelve los usuarios filtrados")
+    @SuppressWarnings("unchecked")
     void buscar_filtrosCombinados_retornaLista() {
         UsuarioBusquedaRequest request = new UsuarioBusquedaRequest();
         request.setRol("ROLE_CLIENTE");
@@ -156,6 +203,7 @@ class UsuarioServiceImplTest {
 
     @Test
     @DisplayName("Busqueda por id inexistente lanza UsuarioNotFoundException (404)")
+    @SuppressWarnings("unchecked")
     void buscar_idInexistente_lanzaUsuarioNotFound() {
         UsuarioBusquedaRequest request = new UsuarioBusquedaRequest();
         request.setId(999L);
@@ -189,8 +237,8 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Actualizacion exitosa cifra la nueva contrasena y aplica el rol")
-    void actualizar_exito_cifraPasswordYAplicaRol() {
+    @DisplayName("Actualizacion exitosa cifra la nueva contrasena, incrementa tokenVersion y revoca sesiones")
+    void actualizar_exito_cifraPassword() {
         Usuario existente = usuarioConId(10L);
         when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
         when(passwordEncoder.encode("Banco123@")).thenReturn("$2a$10$nuevoHash");
@@ -201,7 +249,42 @@ class UsuarioServiceImplTest {
 
         assertEquals(0, response.getCodigo());
         assertEquals("$2a$10$nuevoHash", existente.getPasswordHash());
-        assertEquals("ROLE_ADMIN", existente.getRol());
+        assertEquals("ROLE_CLIENTE", existente.getRol());
+        assertEquals(1L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Actualizacion solo de correo sin cambiar password no revoca sesiones")
+    void actualizar_sinCambioPassword_noRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.existsByCorreoAndIdNot("nuevo@banco.com", 10L)).thenReturn(false);
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioActualizacionRequest request = new UsuarioActualizacionRequest();
+        request.setId(10L);
+        request.setCorreo("nuevo@banco.com");
+
+        UsuarioResponse response = servicio.actualizar(request);
+
+        assertEquals(0, response.getCodigo());
+        assertEquals(0L, existente.getTokenVersion());
+        verify(refreshTokenRepository, never()).revocarTodosPorUsuarioId(any());
+    }
+
+    @Test
+    @DisplayName("Intentar cambiar el rol de un usuario existente lanza ReglaNegocioException")
+    void actualizar_cambioDeRol_lanzaReglaNegocio() {
+        Usuario existente = usuarioConId(10L);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+
+        UsuarioActualizacionRequest request = actualizacionValida();
+        request.setRol("ROLE_ADMIN");
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.actualizar(request));
+        verify(usuarioRepository, never()).save(any(Usuario.class));
     }
 
     @Test
@@ -213,7 +296,7 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Desactivar otro usuario funciona y responde codigo 0")
+    @DisplayName("Desactivar otro usuario funciona, incrementa tokenVersion y revoca sus sesiones")
     void cambiarEstado_desactivarOtroUsuario_exitoso() {
         Usuario existente = usuarioConId(10L);
         when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
@@ -225,6 +308,26 @@ class UsuarioServiceImplTest {
 
         assertEquals(0, response.getCodigo());
         assertFalse(existente.isActivo());
+        assertEquals(1L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Activar usuario no incrementa tokenVersion ni revoca sesiones")
+    void cambiarEstado_activarUsuario_noRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        existente.setActivo(false);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        autenticarComo("otro@banco.com");
+        UsuarioResponse response = servicio.cambiarEstado(estadoRequest(10L, true));
+
+        assertEquals(0, response.getCodigo());
+        assertTrue(existente.isActivo());
+        assertEquals(0L, existente.getTokenVersion());
+        verify(refreshTokenRepository, never()).revocarTodosPorUsuarioId(any());
     }
 
     @Test
@@ -253,7 +356,7 @@ class UsuarioServiceImplTest {
         UsuarioActualizacionRequest request = new UsuarioActualizacionRequest();
         request.setId(10L);
         request.setPassword("Banco123@");
-        request.setRol("ROLE_ADMIN");
+        request.setRol("ROLE_CLIENTE");
         return request;
     }
 

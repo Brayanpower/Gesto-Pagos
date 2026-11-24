@@ -11,10 +11,14 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -46,9 +50,10 @@ public class PagoServicioController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE
     )
+    @PreAuthorize("hasRole('CLIENTE')")
     @Operation(
-            summary = "Realizar recarga o pago de servicio",
-            description = "Valida identidad y autorización del cliente, existencia y estatus activo de la cuenta, saldo suficiente, "
+            summary = "Realizar recarga o pago de servicio (Solo CLIENTE)",
+            description = "Valida identidad del cliente autenticado, su única cuenta de ahorro en estatus ACTIVA, saldo suficiente, "
                     + "catálogo y precio del producto, idempotencia y ejecuta el cargo e integración con GestoPago sendTx.do"
     )
     public ResponseEntity<PagoServicioResponse> realizarPagoServicio(
@@ -64,10 +69,10 @@ public class PagoServicioController {
     }
 
     @GetMapping(value = "/historial", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasRole('CLIENTE')")
     @Operation(
             summary = "Consultar historial de compras del cliente (paginado)",
-            description = "Retorna el historial paginado de recargas y pagos de servicios del cliente autenticado, "
-                    + "de forma general o filtrado por rango de fechas, número de cuenta y estatus"
+            description = "Retorna el historial paginado de recargas y pagos de servicios realizados con la cuenta de ahorro del cliente autenticado"
     )
     public ResponseEntity<PageResponse<HistorialCompraResponse>> obtenerHistorialCompras(
             @Parameter(description = "Fecha inicial del filtro en formato yyyy-MM-dd", example = "2026-10-01")
@@ -96,21 +101,25 @@ public class PagoServicioController {
             @Parameter(description = "Dirección de ordenamiento (ASC o DESC)", example = "DESC")
             @RequestParam(value = "sortDir", defaultValue = "DESC") String sortDir) {
 
+        Sort.Direction direction = "ASC".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
         PageResponse<HistorialCompraResponse> historial = pagoServicioService.obtenerHistorialCompras(
-                fechaInicio, fechaFin, numeroCuenta, estatus, page, size, sortBy, sortDir);
+                fechaInicio, fechaFin, numeroCuenta, estatus, pageable);
         return new ResponseEntity<>(historial, HttpStatus.OK);
     }
 
     @GetMapping(value = "/pagos/{upc}", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasAnyRole('CLIENTE', 'ADMIN')")
     @Operation(
             summary = "Consultar estatus de transacción por folio UPC",
-            description = "Permite al cliente verificar el estatus actual de una compra o recarga mediante su folio UPC"
+            description = "Permite al cliente verificar sus compras o al administrador auditar una transacción mediante su folio UPC"
     )
     public ResponseEntity<PagoServicioResponse> consultarPorUpc(@PathVariable("upc") String upc) {
         return new ResponseEntity<>(pagoServicioService.consultarTransaccionPorUpc(upc), HttpStatus.OK);
     }
 
     @PostMapping(value = "/pagos/{upc}/conciliar", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasAnyRole('CLIENTE', 'ADMIN')")
     @Operation(
             summary = "Conciliar transacción pendiente con el proveedor",
             description = "Consulta en GestoPago el resultado real de una operación en estatus PENDIENTE_CONCILIACION "

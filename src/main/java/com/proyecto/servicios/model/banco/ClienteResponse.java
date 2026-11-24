@@ -14,7 +14,6 @@ import lombok.Setter;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @Getter
 @Setter
@@ -50,7 +49,7 @@ public class ClienteResponse extends GenericResponse {
     private boolean activo;
 
     private DomicilioDTO domicilio;
-    private List<CuentaResponse> cuentas;
+    private CuentaResponse cuenta;
     private UsuarioResponseDTO usuario;
 
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd HH:mm:ss")

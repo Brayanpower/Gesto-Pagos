@@ -78,6 +78,17 @@ class PagoServicioControllerIntegrationTest {
     }
 
     @Test
+    @WithMockUser(username = "admin@banco.com", roles = "ADMIN")
+    @DisplayName("POST /servicios/pagos como ROLE_ADMIN devuelve 403 Forbidden (solo ROLE_CLIENTE compra)")
+    void realizarPago_comoAdmin_retorna403() throws Exception {
+        mockMvc.perform(post("/servicios/pagos")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(requestValido())))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.codigo").value(403));
+    }
+
+    @Test
     @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
     @DisplayName("POST /servicios/pagos autenticado y exitoso devuelve 201 Created")
     void realizarPago_autenticadoExitoso_retorna201() throws Exception {
@@ -219,10 +230,7 @@ class PagoServicioControllerIntegrationTest {
                 eq(LocalDate.of(2026, 10, 31)),
                 eq("1234567890"),
                 eq(EstatusTransaccion.EXITOSA),
-                eq(0),
-                eq(5),
-                eq("fechaCreacion"),
-                eq("DESC")
+                any()
         )).thenReturn(page);
 
         mockMvc.perform(get("/servicios/historial")

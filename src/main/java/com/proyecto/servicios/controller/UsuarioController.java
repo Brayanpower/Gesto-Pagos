@@ -14,6 +14,7 @@ import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,8 +23,9 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 @RequestMapping("/usuarios")
-@Tag(name = "Administración de Usuarios", description = "Endpoints para alta, consulta con filtros combinables, actualización y activación/desactivación de usuarios. Todos los datos se reciben por body (sin PathVariable ni RequestParam)")
+@Tag(name = "Administración de Usuarios (Solo ADMIN)", description = "Endpoints exclusivos de ROLE_ADMIN para alta, consulta, actualización y activación/desactivación de usuarios")
 @SecurityRequirement(name = "BearerAuth")
+@PreAuthorize("hasRole('ADMIN')")
 public class UsuarioController {
 
     private final UsuarioService usuarioService;

@@ -41,11 +41,12 @@ class UsuarioRequestValidationTest {
     }
 
     @Test
-    @DisplayName("UsuarioCreacionRequest sin clienteId produce violacion en clienteId")
-    void creacionSinClienteId_produceViolacion() {
+    @DisplayName("UsuarioCreacionRequest para ROLE_ADMIN sin clienteId no produce violaciones")
+    void creacionAdminSinClienteId_sinViolaciones() {
         UsuarioCreacionRequest request = creacionValida();
         request.setClienteId(null);
-        assertTrue(propiedadesConError(request).contains("clienteId"));
+        request.setRol("ROLE_ADMIN");
+        assertTrue(validator.validate(request).isEmpty());
     }
 
     @Test

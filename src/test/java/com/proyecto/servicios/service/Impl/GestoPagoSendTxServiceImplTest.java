@@ -41,7 +41,6 @@ import static org.mockito.Mockito.when;
 @DisplayName("Pruebas de GestoPagoSendTxServiceImpl")
 class GestoPagoSendTxServiceImplTest {
 
-    private static final String TEST_IV = "p5ldmBPdd/9pjC0bDC/nSg==";
     private static final String TEST_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
 
     @Mock
@@ -53,7 +52,7 @@ class GestoPagoSendTxServiceImplTest {
     @BeforeEach
     void setUp() {
         ObjectMapper objectMapper = new ObjectMapper();
-        encryptionHelper = new EncryptionHelperImpl(objectMapper, TEST_IV, TEST_KEY);
+        encryptionHelper = new EncryptionHelperImpl(objectMapper, TEST_KEY);
         servicio = new GestoPagoSendTxServiceImpl(gestoPagoSendTx, encryptionHelper, objectMapper);
     }
 

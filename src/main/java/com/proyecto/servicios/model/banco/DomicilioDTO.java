@@ -43,7 +43,7 @@ public class DomicilioDTO {
     private String estadoNombre;
 
     @NotBlank(message = "El codigo postal es obligatorio")
-    @Pattern(regexp = "^[0-9]{5}$", message = "El codigo postal debe contener exactamente 5 digitos numericos")
+    @Pattern(regexp = "^\\d{5}$", message = "El codigo postal debe contener exactamente 5 digitos numericos")
     private String cp;
 
     @NotNull(message = "El id del pais es obligatorio")

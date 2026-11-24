@@ -16,6 +16,8 @@ import java.util.List;
 @Configuration
 public class OpenApi {
 
+    private static final String BEARER_AUTH = "BearerAuth";
+
     @Bean
     public OpenAPI customOpenAPI() {
         return new OpenAPI()
@@ -32,12 +34,12 @@ public class OpenApi {
                         new Server().url("https://hassani-1-0-1.onrender.com").description("Servidor Render")
                 ))
                 .components(new Components()
-                        .addSecuritySchemes("BearerAuth", new SecurityScheme()
-                                .name("BearerAuth")
+                        .addSecuritySchemes(BEARER_AUTH, new SecurityScheme()
+                                .name(BEARER_AUTH)
                                 .type(SecurityScheme.Type.HTTP)
                                 .scheme("bearer")
                                 .bearerFormat("JWT")
                                 .description("Ingrese su token JWT obtenido en el endpoint /auth/login")))
-                .addSecurityItem(new SecurityRequirement().addList("BearerAuth"));
+                .addSecurityItem(new SecurityRequirement().addList(BEARER_AUTH));
     }
 }

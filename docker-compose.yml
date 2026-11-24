@@ -1,17 +1,19 @@
 services:
-  mongodb:
-    image: mongo:latest
-    container_name: mongodb_container
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
     restart: unless-stopped
-    ports:
-      - "27017:27017"
+    command: start-dev
     environment:
-      MONGO_INITDB_ROOT_USERNAME: admin
-      MONGO_INITDB_ROOT_PASSWORD: admin
-    volumes:
-      - mongo_data:/data/db
+      # Credenciales de administrador de Keycloak
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: Admin12345!
 
-volumes:
-  mongo_data:
-    driver: local
-
+      # Configuración de la base de datos externa en Supabase
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://aws-1-us-east-1.pooler.supabase.com:6543/postgres?sslmode=require&prepareThreshold=0&preparedStatementCacheQueries=0
+      KC_DB_SCHEMA: keykloack
+      KC_DB_USERNAME: postgres.uujdjpbdwwgetxeoxfpq
+      KC_DB_PASSWORD: Micasa993.@12
+    ports:
+      - "8080:8080"

@@ -2,104 +2,453 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.clientes.Cliente;
 import com.proyecto.servicios.entity.seguridad.Usuario;
+import com.proyecto.servicios.exception.CuentaBloqueadaException;
+import com.proyecto.servicios.model.PageResponse;
+import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
+import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
+import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
+import com.proyecto.servicios.security.CustomUserDetails;
 import com.proyecto.servicios.security.JwtService;
+import com.proyecto.servicios.security.LoginRateLimiter;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
-import java.util.Map;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("Pruebas de AuthServiceImpl")
 class AuthServiceImplTest {
 
+    private static final String CORREO = "juan.garcia@banco.com";
+    private static final String PASSWORD = "Banco123@";
+    private static final String HASH = "$2a$10$hash";
+    private static final ClientMetadata METADATA = ClientMetadata.of("203.0.113.10", "JUnit-Client");
+
     @Mock private UsuarioRepository usuarioRepository;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private JwtService jwtService;
+    @Mock private RefreshTokenService refreshTokenService;
+    @Mock private LoginAuditService loginAuditService;
+    @Mock private LoginRateLimiter loginRateLimiter;
+    @Mock private MfaService mfaService;
 
     @InjectMocks
     private AuthServiceImpl servicio;
 
-    @Test
-    @DisplayName("Login correcto genera token y devuelve datos del cliente")
-    void login_correcto_devuelveToken() {
-        Usuario usuario = usuarioActivo();
-        when(usuarioRepository.findByCorreo("juan.garcia@banco.com")).thenReturn(Optional.of(usuario));
-        when(passwordEncoder.matches("Banco123@", "$2a$10$hash")).thenReturn(true);
-        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-token");
+    @AfterEach
+    void limpiarSecurityContext() {
+        SecurityContextHolder.clearContext();
+    }
 
-        AuthResponse response = servicio.login(new LoginRequest("Juan.Garcia@Banco.com", "Banco123@"));
+    @Test
+    @DisplayName("Login con totpObligatorio=false (desactivado en BD) emite Access Token y Refresh Token directamente")
+    void login_totpObligatorioFalse_devuelveTokens() {
+        Usuario usuario = usuarioActivo(false, false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-token");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-token-value-12345");
+
+        AuthResponse response = servicio.login(new LoginRequest("Juan.Garcia@Banco.com", PASSWORD), METADATA);
 
         assertNotNull(response);
         assertEquals("jwt-token", response.getToken());
-        assertEquals("juan.garcia@banco.com", response.getCorreo());
-        assertEquals("ROLE_CLIENTE", response.getRol());
+        assertEquals("refresh-token-value-12345", response.getRefreshToken());
+        assertEquals(900L, response.getExpiresInSegundos());
+        assertFalse(response.getRequiereTotp());
+        assertFalse(response.getTotpConfiguracionRequerida());
+        assertEquals(CORREO, response.getCorreo());
         assertEquals(1L, response.getClienteId());
+        assertNotNull(usuario.getUltimoLogin());
+
+        verify(loginRateLimiter).verificarYRegistrarIntento("203.0.113.10", CORREO);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_EXITO), eq(true), eq(METADATA), anyString());
+        verify(mfaService, never()).iniciarDesafio(any(), any());
     }
 
     @Test
-    @DisplayName("Login con contrasena incorrecta lanza BadCredentialsException")
-    void login_passwordIncorrecta_lanzaExcepcion() {
-        Usuario usuario = usuarioActivo();
-        when(usuarioRepository.findByCorreo(anyString())).thenReturn(Optional.of(usuario));
-        when(passwordEncoder.matches(anyString(), anyString())).thenReturn(false);
+    @DisplayName("Sobrecarga compatible login(LoginRequest) opera con ClientMetadata desconocido")
+    void login_sobrecargaSinMetadata_funciona() {
+        Usuario usuario = usuarioActivo(false, false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-token");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(eq(usuario), any(ClientMetadata.class)))
+                .thenReturn("refresh-token-value-12345");
 
-        assertThrows(BadCredentialsException.class,
-                () -> servicio.login(new LoginRequest("juan.garcia@banco.com", "Incorrecta1@")));
+        AuthResponse response = servicio.login(new LoginRequest(CORREO, PASSWORD));
+
+        assertEquals("jwt-token", response.getToken());
+        verify(loginRateLimiter).verificarYRegistrarIntento(null, CORREO);
     }
 
     @Test
-    @DisplayName("Login con usuario inexistente lanza BadCredentialsException")
-    void login_usuarioInexistente_lanzaExcepcion() {
-        when(usuarioRepository.findByCorreo(anyString())).thenReturn(Optional.empty());
+    @DisplayName("Primer login con TOTP obligatorio por defecto retorna challenge de configuracion SIN JWT ni refresh")
+    void login_primeraVezTotpObligatorio_devuelveChallengeSinJwt() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA)).thenReturn(
+                new MfaService.ChallengeInitResult(
+                        "challenge-enroll-123",
+                        true,
+                        "BASE32SECRET",
+                        "otpauth://totp/SistemaBancario:juan.garcia@banco.com?secret=BASE32SECRET"));
 
-        assertThrows(BadCredentialsException.class,
-                () -> servicio.login(new LoginRequest("nadie@banco.com", "Banco123@")));
+        AuthResponse response = servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA);
+
+        assertNull(response.getToken());
+        assertNull(response.getRefreshToken());
+        assertNull(response.getTipoToken());
+        assertNull(response.getExpiresInSegundos());
+        assertTrue(response.getRequiereTotp());
+        assertTrue(response.getTotpConfiguracionRequerida());
+        assertEquals("challenge-enroll-123", response.getChallengeToken());
+        assertEquals("BASE32SECRET", response.getTotpSecret());
+        assertNotNull(response.getOtpauthUri());
+
+        verify(jwtService, never()).generateToken(anyMap(), any());
+        verify(refreshTokenService, never()).emitirRefreshToken(any(), any());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_CONFIG_REQUERIDA),
+                eq(true), eq(METADATA), anyString());
     }
 
     @Test
-    @DisplayName("Login con usuario inactivo lanza DisabledException")
-    void login_usuarioInactivo_lanzaExcepcion() {
-        Usuario usuario = usuarioActivo();
-        usuario.setActivo(false);
-        when(usuarioRepository.findByCorreo(anyString())).thenReturn(Optional.of(usuario));
+    @DisplayName("Segundo login con TOTP habilitado en 2 pasos (sin codigoTotp) retorna challenge sin exponer secreto")
+    void login_segundoIngresoDosPasos_devuelveChallengeSinSecretoNiJwt() {
+        Usuario usuario = usuarioActivo(true, true);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("challenge-verify-456", false, null, null));
+
+        AuthResponse response = servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA);
+
+        assertNull(response.getToken());
+        assertNull(response.getRefreshToken());
+        assertNull(response.getTotpSecret());
+        assertNull(response.getOtpauthUri());
+        assertTrue(response.getRequiereTotp());
+        assertFalse(response.getTotpConfiguracionRequerida());
+        assertEquals("challenge-verify-456", response.getChallengeToken());
+
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_REQUERIDO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Segundo login con TOTP habilitado en 1 paso (con codigoTotp valido) emite Access y Refresh Token")
+    void login_segundoIngresoUnPasoConCodigoValido_emiteTokens() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(2);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-1step");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-1step");
+
+        AuthResponse response = servicio.login(new LoginRequest(CORREO, PASSWORD, "123456"), METADATA);
+
+        assertEquals("jwt-1step", response.getToken());
+        assertEquals("refresh-1step", response.getRefreshToken());
+        assertFalse(response.getRequiereTotp());
+        assertEquals(0, usuario.getIntentosFallidos());
+        verify(mfaService).validarCodigoDirectoEnLogin(usuario, "123456");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_EXITO), eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Segundo login en 1 paso con codigoTotp invalido incrementa intentos, audita TOTP_INVALIDO y bloquea al exceder")
+    void login_segundoIngresoTotpInvalido_incrementaYBloqueaAlExceder() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(3);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        doThrow(new BadCredentialsException("Codigo TOTP invalido"))
+                .when(mfaService).validarCodigoDirectoEnLogin(usuario, "999999");
+
+        LoginRequest req = new LoginRequest(CORREO, PASSWORD, "999999");
+        assertThrows(BadCredentialsException.class, () -> servicio.login(req, METADATA));
+        assertEquals(4, usuario.getIntentosFallidos());
+        assertNull(usuario.getBloqueadoHasta());
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.login(req, METADATA));
+        assertEquals(5, usuario.getIntentosFallidos());
+        assertNotNull(usuario.getBloqueadoHasta());
+
+        verify(loginAuditService, times(2)).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_INVALIDO),
+                eq(false), eq(METADATA), anyString());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_CUENTA_BLOQUEADA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("verificarTotp valido valida activos, actualiza ultimoLogin, emite tokens y audita EXITO")
+    void verificarTotp_valido_emiteTokensYAudita() {
+        Usuario usuario = usuarioActivo(true, true);
+        TotpVerificationRequest request = new TotpVerificationRequest("chal-1", "123456");
+
+        when(mfaService.validarDesafioYCodigo("chal-1", "123456")).thenReturn(usuario);
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-verified");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-verified");
+
+        AuthResponse response = servicio.verificarTotp(request, METADATA);
+
+        assertEquals("jwt-verified", response.getToken());
+        assertEquals("refresh-verified", response.getRefreshToken());
+        assertFalse(response.getRequiereTotp());
+        assertNotNull(usuario.getUltimoLogin());
+        verify(loginRateLimiter).verificarYRegistrarIntento("203.0.113.10", null);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_EXITO), eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("verificarTotp con usuario o cliente inactivo lanza DisabledException y con codigo invalido audita TOTP_INVALIDO")
+    void verificarTotp_inactivoYCodigoInvalido() {
+        Usuario usuarioInactivo = usuarioActivo(true, true);
+        usuarioInactivo.setActivo(false);
+        when(mfaService.validarDesafioYCodigo("chal-inactivo", "123456")).thenReturn(usuarioInactivo);
 
         assertThrows(DisabledException.class,
-                () -> servicio.login(new LoginRequest("juan.garcia@banco.com", "Banco123@")));
+                () -> servicio.verificarTotp(new TotpVerificationRequest("chal-inactivo", "123456"), METADATA));
+        verify(loginAuditService).registrarEvento(
+                eq(usuarioInactivo), eq(CORREO), eq(LoginAuditService.EVENTO_USUARIO_INACTIVO),
+                eq(false), eq(METADATA), anyString());
+
+        when(mfaService.validarDesafioYCodigo("chal-malo", "000000"))
+                .thenThrow(new BadCredentialsException("Codigo invalido"));
+        assertThrows(BadCredentialsException.class,
+                () -> servicio.verificarTotp(new TotpVerificationRequest("chal-malo", "000000"), METADATA));
+        verify(loginAuditService).registrarEvento(
+                eq(null), eq("desconocido"), eq(LoginAuditService.EVENTO_TOTP_INVALIDO),
+                eq(false), eq(METADATA), anyString());
     }
 
-    private static Usuario usuarioActivo() {
+    @Test
+    @DisplayName("Bloqueo automatico tras 5 intentos fallidos de contrasena y rechazo de intentos posteriores")
+    void login_cincoIntentosFallidos_bloqueaCuenta() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches("Mala123@", HASH)).thenReturn(false);
+
+        LoginRequest req = new LoginRequest(CORREO, "Mala123@");
+        for (int i = 1; i <= 4; i++) {
+            assertThrows(BadCredentialsException.class, () -> servicio.login(req, METADATA));
+            assertEquals(i, usuario.getIntentosFallidos());
+            assertNull(usuario.getBloqueadoHasta());
+        }
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.login(req, METADATA));
+        assertEquals(5, usuario.getIntentosFallidos());
+        assertNotNull(usuario.getBloqueadoHasta());
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA));
+        verify(passwordEncoder, never()).matches(PASSWORD, HASH);
+    }
+
+    @Test
+    @DisplayName("Anti-enumeracion: usuario inactivo con contrasena incorrecta recibe BadCredentialsException y NO DisabledException")
+    void login_antiEnumeracion_usuarioInactivoPasswordIncorrecta_lanzaBadCredentials() {
+        Usuario usuario = usuarioActivo(true, false);
+        usuario.setActivo(false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches("Incorrecta1@", HASH)).thenReturn(false);
+
+        assertThrows(BadCredentialsException.class,
+                () -> servicio.login(new LoginRequest(CORREO, "Incorrecta1@"), METADATA));
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_PASSWORD_INVALIDA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Usuario inactivo o cliente inactivo con contrasena correcta lanza DisabledException")
+    void login_usuarioOClienteInactivoConPasswordCorrecta_lanzaDisabled() {
+        Usuario usuario = usuarioActivo(true, false);
+        usuario.setActivo(false);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+
+        assertThrows(DisabledException.class, () -> servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA));
+
+        usuario.setActivo(true);
+        usuario.getCliente().setActivo(false);
+        assertThrows(DisabledException.class, () -> servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA));
+        verify(loginAuditService, times(2)).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_USUARIO_INACTIVO),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Usuario inexistente audita PASSWORD_INVALIDA y lanza BadCredentialsException")
+    void login_usuarioInexistente_auditaYLanzaBadCredentials() {
+        when(usuarioRepository.findWithClienteByCorreo("nadie@banco.com")).thenReturn(Optional.empty());
+
+        assertThrows(BadCredentialsException.class,
+                () -> servicio.login(new LoginRequest("nadie@banco.com", PASSWORD), METADATA));
+        verify(loginAuditService).registrarEvento(
+                eq(null), eq("nadie@banco.com"), eq(LoginAuditService.EVENTO_PASSWORD_INVALIDA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Refresh token rota token, emite nuevo Access Token y audita REFRESH_EXITO")
+    void refresh_valido_emiteNuevoAccessYRefreshToken() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshTokenRequest req = new RefreshTokenRequest("refresh-raw-token-1234567890");
+        when(refreshTokenService.rotarRefreshToken("refresh-raw-token-1234567890", METADATA))
+                .thenReturn(new RefreshTokenService.RotationResult(usuario, "refresh-rotated-1234567890"));
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-refreshed");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+
+        AuthResponse response = servicio.refresh(req, METADATA);
+
+        assertEquals("jwt-refreshed", response.getToken());
+        assertEquals("refresh-rotated-1234567890", response.getRefreshToken());
+        assertEquals(900L, response.getExpiresInSegundos());
+        verify(loginRateLimiter).verificarYRegistrarIntento("203.0.113.10", null);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_REFRESH_EXITO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Logout revoca refresh token, incrementa tokenVersion si el Bearer JWT es valido y audita LOGOUT")
+    void logout_conRefreshYBearerValido_revocaEIncrementaTokenVersion() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshTokenRequest req = new RefreshTokenRequest("refresh-raw-token-1234567890");
+
+        when(jwtService.extractUsername("valid-jwt")).thenReturn(CORREO);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(jwtService.isTokenValid(eq("valid-jwt"), any(CustomUserDetails.class))).thenReturn(true);
+        when(usuarioRepository.save(usuario)).thenReturn(usuario);
+
+        servicio.logout("Bearer valid-jwt", req, METADATA);
+
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarToken("refresh-raw-token-1234567890");
+        verify(usuarioRepository).save(usuario);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_LOGOUT), eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Logout solo con refresh token y sin Bearer JWT no falla y audita LOGOUT")
+    void logout_sinBearer_revocaRefreshYAudita() {
+        RefreshTokenRequest req = new RefreshTokenRequest("refresh-raw-token-1234567890");
+
+        servicio.logout(null, req, METADATA);
+
+        verify(refreshTokenService).revocarToken("refresh-raw-token-1234567890");
+        verify(usuarioRepository, never()).save(any());
+        verify(loginAuditService).registrarEvento(
+                eq(null), eq("desconocido"), eq(LoginAuditService.EVENTO_LOGOUT), eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("LogoutAll revoca todas las sesiones del usuario autenticado, incrementa tokenVersion y audita LOGOUT_ALL")
+    void logoutAll_usuarioAutenticado_revocaTodasLasSesiones() {
+        Usuario usuario = usuarioActivo(true, true);
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(CORREO, "n/a", List.of()));
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+
+        servicio.logoutAll(METADATA);
+
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(usuarioRepository).save(usuario);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_LOGOUT_ALL),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("consultarAuditoria delega correctamente a LoginAuditService")
+    void consultarAuditoria_delegaALoginAuditService() {
+        Pageable pageable = PageRequest.of(0, 20);
+        PageResponse<AuditoriaLoginResponse> expected = PageResponse.<AuditoriaLoginResponse>builder()
+                .contenido(List.of())
+                .paginaActual(0)
+                .tamanoPagina(20)
+                .totalElementos(0L)
+                .totalPaginas(0)
+                .primera(true)
+                .ultima(true)
+                .build();
+        when(loginAuditService.consultarAuditoria(CORREO, pageable)).thenReturn(expected);
+
+        PageResponse<AuditoriaLoginResponse> result = servicio.consultarAuditoria(CORREO, pageable);
+
+        assertEquals(expected, result);
+        verify(loginAuditService).consultarAuditoria(CORREO, pageable);
+    }
+
+    private static Usuario usuarioActivo(boolean totpObligatorio, boolean totpHabilitado) {
         Cliente cliente = new Cliente();
         cliente.setId(1L);
         cliente.setNombre("Juan");
         cliente.setApellidoPaterno("Garcia");
+        cliente.setActivo(true);
 
         Usuario usuario = new Usuario();
         usuario.setId(10L);
-        usuario.setCorreo("juan.garcia@banco.com");
-        usuario.setPasswordHash("$2a$10$hash");
+        usuario.setCorreo(CORREO);
+        usuario.setPasswordHash(HASH);
         usuario.setRol("ROLE_CLIENTE");
         usuario.setActivo(true);
+        usuario.setTotpObligatorio(totpObligatorio);
+        usuario.setTotpHabilitado(totpHabilitado);
+        usuario.setIntentosFallidos(0);
+        usuario.setTokenVersion(0L);
         usuario.setCliente(cliente);
+        usuario.setFechaCreacion(LocalDateTime.now(ZoneId.systemDefault()));
         return usuario;
     }
 }

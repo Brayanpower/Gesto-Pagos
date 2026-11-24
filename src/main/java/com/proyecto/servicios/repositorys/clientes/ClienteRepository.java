@@ -30,7 +30,7 @@ public interface ClienteRepository extends JpaRepository<Cliente, Long>, JpaSpec
 
     Optional<Cliente> findByIdAndActivoTrue(Long id);
 
-    boolean existsByCuentasNumeroCuenta(String numeroCuenta);
+    boolean existsByCuentaNumeroCuenta(String numeroCuenta);
 
     @Query("select count(c) > 0 from Cuenta c "
             + "where c.numeroCuenta = :numeroCuenta "
