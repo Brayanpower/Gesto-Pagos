@@ -268,6 +268,16 @@ class AuthServiceImplTest {
         verify(loginAuditService).registrarEvento(
                 eq(null), eq("desconocido"), eq(LoginAuditService.EVENTO_TOTP_INVALIDO),
                 eq(false), eq(METADATA), anyString());
+
+        Usuario usuarioConDesafio = usuarioActivo(true, true);
+        when(mfaService.validarDesafioYCodigo("chal-user", "999999"))
+                .thenThrow(new BadCredentialsException("Codigo TOTP invalido"));
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-user")).thenReturn(Optional.of(usuarioConDesafio));
+        assertThrows(BadCredentialsException.class,
+                () -> servicio.verificarTotp(new TotpVerificationRequest("chal-user", "999999"), METADATA));
+        verify(loginAuditService).registrarEvento(
+                eq(usuarioConDesafio), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_INVALIDO),
+                eq(false), eq(METADATA), anyString());
     }
 
     @Test
@@ -379,16 +389,18 @@ class AuthServiceImplTest {
     }
 
     @Test
-    @DisplayName("Logout solo con refresh token y sin Bearer JWT no falla y audita LOGOUT")
+    @DisplayName("Logout solo con refresh token y sin Bearer JWT no falla y audita usuario recuperado del refresh token")
     void logout_sinBearer_revocaRefreshYAudita() {
+        Usuario usuario = usuarioActivo(true, true);
         RefreshTokenRequest req = new RefreshTokenRequest("refresh-raw-token-1234567890");
+        when(refreshTokenService.revocarToken("refresh-raw-token-1234567890")).thenReturn(Optional.of(usuario));
 
         servicio.logout(null, req, METADATA);
 
         verify(refreshTokenService).revocarToken("refresh-raw-token-1234567890");
         verify(usuarioRepository, never()).save(any());
         verify(loginAuditService).registrarEvento(
-                eq(null), eq("desconocido"), eq(LoginAuditService.EVENTO_LOGOUT), eq(true), eq(METADATA), anyString());
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_LOGOUT), eq(true), eq(METADATA), anyString());
     }
 
     @Test

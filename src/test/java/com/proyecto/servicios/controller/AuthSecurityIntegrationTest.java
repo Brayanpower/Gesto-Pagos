@@ -302,6 +302,21 @@ class AuthSecurityIntegrationTest {
         verify(authService).consultarAuditoria("cliente@banco.com", PageRequest.of(1, 10));
     }
 
+    @Test
+    @DisplayName("GET /auth/auditoria valida page >= 0 y size entre 1 y 100 antes de paginar (400 Bad Request)")
+    @WithMockUser(username = "admin@banco.com", roles = "ADMIN")
+    void auditoria_paginacionInvalida_retorna400() throws Exception {
+        mockMvc.perform(get("/auth/auditoria").param("page", "-1").param("size", "10"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+
+        mockMvc.perform(get("/auth/auditoria").param("page", "0").param("size", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+
+        verifyNoInteractions(authService);
+    }
+
     private Usuario crearUsuario(String correo, String rol) {
         Usuario usuario = new Usuario();
         usuario.setId(10L);

@@ -180,9 +180,13 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<GenericResponse> handleBadCredentials(BadCredentialsException ex) {
         log.warn("Intento de autenticacion con credenciales invalidas");
+        String rawMsg = ex.getMessage();
+        String mensaje = (rawMsg == null || rawMsg.isBlank() || "Credenciales invalidas".equals(rawMsg))
+                ? "Credenciales invalidas: Correo o contrasena incorrectos"
+                : rawMsg;
         GenericResponse response = new GenericResponse();
         response.setCodigo(HttpStatus.UNAUTHORIZED.value());
-        response.setMensaje("Credenciales invalidas: Correo o contrasena incorrectos");
+        response.setMensaje(mensaje);
         return new ResponseEntity<>(response, HttpStatus.UNAUTHORIZED);
     }
 
