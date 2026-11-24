@@ -53,7 +53,9 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-security'
     implementation 'io.jsonwebtoken:jjwt-api:0.13.0'
     runtimeOnly 'io.jsonwebtoken:jjwt-impl:0.13.0'
-    runtimeOnly 'io.jsonwebtoken:jjwt-jackson:0.13.0'
+    runtimeOnly('io.jsonwebtoken:jjwt-jackson:0.13.0') {
+        exclude group: 'com.fasterxml.jackson.core'
+    }
     //Mapeo y utilerias
     implementation 'org.mapstruct:mapstruct:1.6.3'
     //Mail-XML
@@ -99,6 +101,10 @@ configurations.all {
     exclude group: "org.apache.logging.log4j", module: "log4j-api"
     exclude group: "org.apache.logging.log4j", module: "log4j-to-slf4j"
     exclude group: "log4j", module: "log4j"
+}
+
+configurations.matching { it.name in ['compileClasspath', 'runtimeClasspath'] }.configureEach {
+    resolutionStrategy.activateDependencyLocking()
 }
 
 test {
