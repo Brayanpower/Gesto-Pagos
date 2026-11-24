@@ -103,7 +103,7 @@ public class GestoPagoTokenServiceImpl implements GestoPagoTokenService {
             tokenRepository.save(tokenEntity);
             log.info("Token GestoPago renovado y resguardado de forma segura");
 
-        } catch (Exception e) {
+        } catch (RuntimeException e) {
             log.error("Error al renovar token GestoPago ({}): {}",
                     e.getClass().getSimpleName(), LogSanitizer.sanitize(e.getMessage()));
         } finally {
@@ -148,6 +148,28 @@ public class GestoPagoTokenServiceImpl implements GestoPagoTokenService {
         }
     }
 
+    @Override
+    public void invalidarTokenActual() {
+        if (tieneBearerEstatico() || idDistribuidor == null || idDistribuidor <= 0
+                || codigoDispositivo == null || codigoDispositivo.isBlank()) {
+            return;
+        }
+        tokenLock.lock();
+        try {
+            tokenRepository.findByIdDistribuidorAndCodigoDispositivo(idDistribuidor, codigoDispositivo)
+                    .ifPresent(tokenEntity -> {
+                        if (Boolean.TRUE.equals(tokenEntity.getActivo())) {
+                            tokenEntity.setActivo(false);
+                            tokenRepository.save(tokenEntity);
+                            log.info("Token GestoPago invalidado para distribuidor={} tras rechazo de autenticacion",
+                                    idDistribuidor);
+                        }
+                    });
+        } finally {
+            tokenLock.unlock();
+        }
+    }
+
     private boolean tieneBearerEstatico() {
         return staticBearerToken != null && !staticBearerToken.isBlank();
     }
@@ -160,7 +182,7 @@ public class GestoPagoTokenServiceImpl implements GestoPagoTokenService {
                 ? tokenEntity.getFechaActualizacion()
                 : tokenEntity.getFechaCreacion();
         if (referencia == null) {
-            return true;
+            return false;
         }
         long duracionSegundos = (tokenEntity.getExpiresIn() != null && tokenEntity.getExpiresIn() > MARGEN_EXPIRACION_SEGUNDOS)
                 ? (tokenEntity.getExpiresIn() - MARGEN_EXPIRACION_SEGUNDOS)

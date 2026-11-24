@@ -8,6 +8,7 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
 import java.util.Base64;
 
@@ -23,17 +24,23 @@ public class AesEncryptionImpl {
     }
 
     public static String aesCipher(String mode, String input, String key) {
-        byte[] keyBytes = Base64.getDecoder().decode(key);
+        if (input == null || key == null || key.isBlank()) {
+            throw new IllegalArgumentException("El texto de entrada y la llave criptografica son obligatorios");
+        }
+        byte[] keyBytes = Base64.getDecoder().decode(key.trim());
         SecretKey secretKey = new SecretKeySpec(keyBytes, "AES");
         if (Mode.ENCRYPT.name().equalsIgnoreCase(mode)) {
             return encrypt(input, secretKey);
         } else if (Mode.DECRYPT.name().equalsIgnoreCase(mode)) {
             return decrypt(input, secretKey);
         }
-        return null;
+        throw new IllegalArgumentException("Modo criptografico no soportado");
     }
 
     public static String encrypt(String input, SecretKey secretKey) {
+        if (input == null || secretKey == null) {
+            throw new IllegalArgumentException("La entrada y la llave secreta son obligatorias para cifrar");
+        }
         try {
             byte[] iv = new byte[IV_LENGTH_BYTES];
             SECURE_RANDOM.nextBytes(iv);
@@ -44,15 +51,22 @@ public class AesEncryptionImpl {
             buffer.put(iv);
             buffer.put(cipherText);
             return Base64.getEncoder().encodeToString(buffer.array());
-        } catch (Exception e) {
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             log.error("Error criptografico al cifrar carga util ({})", e.getClass().getSimpleName());
+            throw new IllegalStateException("No fue posible cifrar la informacion", e);
         }
-        return null;
     }
 
     public static String decrypt(String input, SecretKey secretKey) {
+        if (input == null || secretKey == null) {
+            throw new IllegalArgumentException("La entrada y la llave secreta son obligatorias para descifrar");
+        }
         try {
-            ByteBuffer buffer = ByteBuffer.wrap(Base64.getDecoder().decode(input));
+            byte[] decoded = Base64.getDecoder().decode(input.trim());
+            if (decoded.length <= IV_LENGTH_BYTES) {
+                throw new IllegalArgumentException("Payload cifrado invalido o incompleto");
+            }
+            ByteBuffer buffer = ByteBuffer.wrap(decoded);
             byte[] iv = new byte[IV_LENGTH_BYTES];
             buffer.get(iv);
             byte[] cipherText = new byte[buffer.remaining()];
@@ -60,10 +74,10 @@ public class AesEncryptionImpl {
             Cipher cipher = Cipher.getInstance(TRANSFORMATION);
             cipher.init(Cipher.DECRYPT_MODE, secretKey, new GCMParameterSpec(TAG_LENGTH_BITS, iv));
             return new String(cipher.doFinal(cipherText), StandardCharsets.UTF_8);
-        } catch (Exception e) {
+        } catch (GeneralSecurityException | IllegalArgumentException e) {
             log.debug("No fue posible descifrar la cadena recibida ({})", e.getClass().getSimpleName());
+            throw new IllegalStateException("No fue posible descifrar la informacion", e);
         }
-        return null;
     }
 
     public enum Mode {

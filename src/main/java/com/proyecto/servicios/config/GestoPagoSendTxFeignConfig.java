@@ -13,10 +13,15 @@ import java.util.concurrent.TimeUnit;
 public class GestoPagoSendTxFeignConfig {
 
     @Bean
-    public RequestInterceptor gestoPagoSendTxAuthInterceptor(GestoPagoTokenService tokenService) {
+    public RequestInterceptor gestoPagoSendTxAuthInterceptor(
+            GestoPagoTokenService tokenService,
+            @Value("${gestopago.auth.api-key:}") String apiKey) {
         return requestTemplate -> {
             String token = tokenService.obtenerBearerTokenValido();
             requestTemplate.header("Authorization", "Bearer " + token);
+            if (apiKey != null && !apiKey.isBlank()) {
+                requestTemplate.header("X-API-Key", apiKey.trim());
+            }
         };
     }
 

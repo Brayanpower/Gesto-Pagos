@@ -186,7 +186,7 @@ class TransaccionPersistenceServiceTest {
         tx.setMonto(new BigDecimal("100.00"));
         tx.setEstatus(EstatusTransaccion.EN_PROCESO);
 
-        when(transaccionRepository.findById(55L)).thenReturn(Optional.of(tx));
+        when(transaccionRepository.findByIdForUpdate(55L)).thenReturn(Optional.of(tx));
         when(cuentaRepository.findByNumeroCuentaForUpdate("1234567890")).thenReturn(Optional.of(cuenta));
         when(transaccionRepository.save(any(TransaccionServicio.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -198,6 +198,35 @@ class TransaccionPersistenceServiceTest {
         persistenceService.reversarCargo(55L, EstatusTransaccion.RECHAZADA, "05", "Rechazada");
         assertEquals(new BigDecimal("500.00"), cuenta.getSaldo());
         verify(cuentaRepository, times(1)).save(cuenta);
+    }
+
+    @Test
+    @DisplayName("confirmarExito y marcarPendienteConciliacion adquieren bloqueo pesimista findByIdForUpdate")
+    void confirmarYMarcarPendiente_usanBloqueoPesimista() {
+        TransaccionServicio tx = new TransaccionServicio();
+        tx.setId(77L);
+        tx.setUpc("1122334466");
+        tx.setEstatus(EstatusTransaccion.EN_PROCESO);
+        tx.setIntentosConciliacion(0);
+
+        when(transaccionRepository.findByIdForUpdate(77L)).thenReturn(Optional.of(tx));
+        when(transaccionRepository.save(any(TransaccionServicio.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        persistenceService.marcarPendienteConciliacion(77L, "TIMEOUT", "Timeout lectura", true);
+        assertEquals(EstatusTransaccion.PENDIENTE_CONCILIACION, tx.getEstatus());
+        assertEquals(1, tx.getIntentosConciliacion());
+
+        var ok = com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult.builder()
+                .estado(com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult.EstadoProveedor.APROBADA)
+                .codigo("01")
+                .mensaje("Aprobada")
+                .idTx("GP-100")
+                .numAutorizacion("AUT-1")
+                .build();
+        persistenceService.confirmarExito(77L, ok);
+        assertEquals(EstatusTransaccion.EXITOSA, tx.getEstatus());
+        assertEquals("GP-100", tx.getFolioProveedor());
+        verify(transaccionRepository, times(2)).findByIdForUpdate(77L);
     }
 
     private static Cuenta cuentaActiva(Long clienteId, String numeroCuenta, BigDecimal saldo) {

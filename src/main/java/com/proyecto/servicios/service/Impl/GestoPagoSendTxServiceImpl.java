@@ -8,8 +8,9 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.GestoPagoTxResult.EstadoProveedor;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.security.LogSanitizer;
-import com.proyecto.servicios.service.EncryptionHelper;
+import com.proyecto.servicios.service.GestoPagoPayloadCrypto;
 import com.proyecto.servicios.service.GestoPagoSendTxService;
+import com.proyecto.servicios.service.GestoPagoTokenService;
 import feign.FeignException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -51,8 +52,9 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
     private static final String FIELD_LOWER_MENSAJE = "mensaje";
 
     private final GestoPagoSendTx gestoPagoSendTx;
-    private final EncryptionHelper encryptionHelper;
+    private final GestoPagoPayloadCrypto payloadCrypto;
     private final ObjectMapper objectMapper;
+    private final GestoPagoTokenService gestoPagoTokenService;
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Override
@@ -80,6 +82,9 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
 
             int status = response.getStatusCode().value();
             if (status == 400 || status == 401 || status == 403 || status == 404) {
+                if (status == 401) {
+                    gestoPagoTokenService.invalidarTokenActual();
+                }
                 throw new ProveedorExternoException(
                         "El proveedor de servicios rechazo la solicitud antes de procesarla (HTTP " + status + ").");
             }
@@ -142,7 +147,7 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
 
         String signedPayload;
         try {
-            signedPayload = encryptionHelper.encrypt(request);
+            signedPayload = payloadCrypto.encrypt(request);
         } catch (Exception ex) {
             throw new ProveedorExternoException(
                     "Error al proteger criptograficamente la solicitud antes del envio.");
@@ -157,6 +162,9 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
     private GestoPagoTxResult clasificarFalloTransporte(FeignException ex, String upc) {
         int status = ex.status();
         if (status == 400 || status == 401 || status == 403 || status == 404) {
+            if (status == 401) {
+                gestoPagoTokenService.invalidarTokenActual();
+            }
             log.error("Rechazo HTTP {} de GestoPago previo al procesamiento para upc={}", status, upc);
             throw new ProveedorExternoException(
                     "El proveedor rechazo la comunicacion de integracion (HTTP " + status + "). No se realizo el cargo.");
@@ -199,7 +207,7 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
                     "El proveedor devolvio una respuesta vacia; operacion marcada para conciliacion.");
         }
 
-        String contenido = resolverContenidoDescifradoSiAplica(rawBody.trim());
+        String contenido = resolverContenidoDescifradoSiAplica(rawBody.trim(), upc);
 
         if (contenido.startsWith("<")) {
             return parsearXmlSeguramente(contenido, upc);
@@ -213,17 +221,18 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
                 "No fue posible confirmar el resultado devuelto por el proveedor; operacion en conciliacion.");
     }
 
-    private String resolverContenidoDescifradoSiAplica(String body) {
+    private String resolverContenidoDescifradoSiAplica(String body, String upc) {
         if (body.startsWith("<") || body.startsWith("{")) {
             return body;
         }
         try {
-            String descifrado = encryptionHelper.decryptToString(body);
+            String descifrado = payloadCrypto.decryptToString(body);
             if (descifrado != null && !descifrado.isBlank()) {
                 return descifrado.trim();
             }
-        } catch (Exception ignored) {
-            // Si no estaba cifrado en Base64 AES, conservamos original para evaluacion segura
+        } catch (RuntimeException ex) {
+            log.debug("Respuesta recibida sin cifrado AES aplicable para upc={} ({})",
+                    upc, ex.getClass().getSimpleName());
         }
         return body;
     }
@@ -269,7 +278,7 @@ public class GestoPagoSendTxServiceImpl implements GestoPagoSendTxService {
 
             if (root.hasNonNull(FIELD_SIGNED) && !root.has(FIELD_UPPER_MENSAJE)
                     && !root.has(FIELD_LOWER_CODIGO) && !root.has(FIELD_UPPER_CODIGO)) {
-                String decrypted = encryptionHelper.decryptToString(root.get(FIELD_SIGNED).asText());
+                String decrypted = payloadCrypto.decryptToString(root.get(FIELD_SIGNED).asText());
                 if (decrypted != null && !decrypted.isBlank()) {
                     return interpretarRespuestaProveedor(decrypted.trim(), upc);
                 }

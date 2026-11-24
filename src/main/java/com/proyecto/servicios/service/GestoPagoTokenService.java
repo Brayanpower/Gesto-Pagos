@@ -11,4 +11,6 @@ public interface GestoPagoTokenService {
     Optional<GestoPagoToken> obtenerTokenActivo(Integer idDistribuidor, String codigoDispositivo);
 
     String obtenerBearerTokenValido();
+
+    void invalidarTokenActual();
 }

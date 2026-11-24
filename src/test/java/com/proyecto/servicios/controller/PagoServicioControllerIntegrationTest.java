@@ -248,6 +248,19 @@ class PagoServicioControllerIntegrationTest {
                 .andExpect(jsonPath("$.contenido[0].estatus").value("EXITOSA"));
     }
 
+    @Test
+    @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+    @DisplayName("GET /servicios/historial con page negativo o size fuera de rango devuelve 400 Bad Request")
+    void obtenerHistorial_paginacionInvalida_retorna400() throws Exception {
+        mockMvc.perform(get("/servicios/historial").param("page", "-1").param("size", "10"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+
+        mockMvc.perform(get("/servicios/historial").param("page", "0").param("size", "0"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+    }
+
     private static SendTxRequest requestValido() {
         return SendTxRequest.builder()
                 .numeroCuenta("1234567890")
