@@ -162,20 +162,33 @@ public class UsuarioServiceImpl implements UsuarioService {
         Usuario usuario = usuarioRepository.findById(request.getId())
                 .orElseThrow(() -> new UsuarioNotFoundException(request.getId()));
 
+        boolean correoActualizado = false;
         if (request.getCorreo() != null && !request.getCorreo().isBlank()) {
             String nuevoCorreo = request.getCorreo().trim().toLowerCase();
             if (!usuario.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
-                if (usuarioRepository.existsByCorreoAndIdNot(nuevoCorreo, usuario.getId())) {
+                boolean duplicadoEnUsuario = usuarioRepository.existsByCorreoAndIdNot(nuevoCorreo, usuario.getId());
+                boolean duplicadoEnCliente = usuario.getCliente() != null
+                        ? clienteRepository.existsByCorreoAndIdNot(nuevoCorreo, usuario.getCliente().getId())
+                        : clienteRepository.existsByCorreo(nuevoCorreo);
+                if (duplicadoEnUsuario || duplicadoEnCliente) {
                     throw new DuplicateResourceException("El correo electronico ya pertenece a otro usuario: " + nuevoCorreo);
                 }
                 usuario.setCorreo(nuevoCorreo);
+                if (usuario.getCliente() != null) {
+                    usuario.getCliente().setCorreo(nuevoCorreo);
+                    clienteRepository.save(usuario.getCliente());
+                }
+                usuario.incrementarTokenVersion();
+                correoActualizado = true;
             }
         }
 
         boolean passwordActualizado = false;
         if (request.getPassword() != null && !request.getPassword().isBlank()) {
             usuario.setPasswordHash(passwordEncoder.encode(request.getPassword()));
-            usuario.incrementarTokenVersion();
+            if (!correoActualizado) {
+                usuario.incrementarTokenVersion();
+            }
             passwordActualizado = true;
         }
 
@@ -187,7 +200,7 @@ public class UsuarioServiceImpl implements UsuarioService {
         }
 
         Usuario guardado = usuarioRepository.save(usuario);
-        if (passwordActualizado) {
+        if (passwordActualizado || correoActualizado) {
             refreshTokenRepository.revocarTodosPorUsuarioId(usuario.getId());
         }
         log.info("Usuario con ID {} actualizado exitosamente", guardado.getId());

@@ -2,6 +2,7 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.catalogos.CatalogoGeneros;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
+import com.proyecto.servicios.exception.DuplicateResourceException;
 import com.proyecto.servicios.mapper.CatalogoGeneroMapper;
 import com.proyecto.servicios.model.catalogos.CatalogoGeneroRequest;
 import com.proyecto.servicios.model.catalogos.CatalogoGeneroResponse;
@@ -92,11 +93,11 @@ class CatalogoGeneroServiceImplTest {
     }
 
     @Test
-    @DisplayName("crear con tipo duplicado lanza excepcion y no guarda")
+    @DisplayName("crear con tipo duplicado lanza DuplicateResourceException y no guarda")
     void crear_tipoDuplicado_lanzaYNoGuarda() {
         when(catalogoGenerosRepository.findByTipo("M")).thenReturn(Optional.of(genero(1L, "M")));
 
-        assertThrows(IllegalArgumentException.class, () -> servicio.crear(request("M")));
+        assertThrows(DuplicateResourceException.class, () -> servicio.crear(request("M")));
 
         verify(catalogoGenerosRepository, never()).save(any());
     }

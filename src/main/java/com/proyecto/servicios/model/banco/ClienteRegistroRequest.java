@@ -43,7 +43,7 @@ public class ClienteRegistroRequest {
     private LocalDate fechaNacimiento;
 
     @NotBlank(message = "La CURP es obligatoria")
-    @Pattern(regexp = "(?i)^[A-Z]{4}\\d{6}[HM][A-Z]{5}[0-9A-Z]\\d$", message = "El formato de CURP no es valido (18 caracteres)")
+    @Pattern(regexp = "(?iu)^[A-Z]{4}\\d{6}[HM][A-Z]{5}[\\dA-Z]\\d$", message = "El formato de CURP no es valido (18 caracteres)")
     private String curp;
 
     @NotBlank(message = "El RFC es obligatorio")
@@ -83,6 +83,7 @@ public class ClienteRegistroRequest {
 
     @NotNull(message = "El ingreso mensual es obligatorio")
     @DecimalMin(value = "0.01", message = "El ingreso mensual debe ser mayor a cero")
+    @Digits(integer = 13, fraction = 2, message = "El ingreso mensual debe tener hasta 13 digitos enteros y maximo 2 decimales")
     private BigDecimal ingresoMensual;
 
     // --- Domicilio ---
@@ -92,6 +93,7 @@ public class ClienteRegistroRequest {
 
     // --- Cuenta Inicial y Credenciales ---
     @DecimalMin(value = "0.00", message = "El saldo inicial no puede ser negativo")
+    @Digits(integer = 13, fraction = 2, message = "El saldo inicial debe tener hasta 13 digitos enteros y maximo 2 decimales")
     private BigDecimal saldoInicial;
 
     @NotBlank(message = "La contrasena es obligatoria")

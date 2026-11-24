@@ -2,6 +2,7 @@ package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
+import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
@@ -9,6 +10,7 @@ import com.proyecto.servicios.mapper.CuentaMapper;
 import com.proyecto.servicios.model.banco.CuentaActualizacionRequest;
 import com.proyecto.servicios.model.banco.CuentaResponse;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.CuentaService;
 import lombok.extern.slf4j.Slf4j;
@@ -28,14 +30,17 @@ public class CuentaServiceImpl implements CuentaService {
     private final CuentaRepository cuentaRepository;
     private final CuentaMapper cuentaMapper;
     private final AuthenticatedUserService authenticatedUserService;
+    private final TransaccionServicioRepository transaccionServicioRepository;
 
     public CuentaServiceImpl(
             CuentaRepository cuentaRepository,
             CuentaMapper cuentaMapper,
-            AuthenticatedUserService authenticatedUserService) {
+            AuthenticatedUserService authenticatedUserService,
+            TransaccionServicioRepository transaccionServicioRepository) {
         this.cuentaRepository = cuentaRepository;
         this.cuentaMapper = cuentaMapper;
         this.authenticatedUserService = authenticatedUserService;
+        this.transaccionServicioRepository = transaccionServicioRepository;
     }
 
     @Override
@@ -105,9 +110,28 @@ public class CuentaServiceImpl implements CuentaService {
             throw new ReglaNegocioException("Una cuenta cancelada no puede cambiar de estatus.");
         }
 
+        if (request.getEstatus() == EstatusCuenta.RECHAZADA) {
+            if (cuenta.getEstatus() != EstatusCuenta.PENDIENTE_REVISION) {
+                throw new ReglaNegocioException(
+                        "Solo se puede rechazar una cuenta que se encuentre en estatus PENDIENTE_REVISION.");
+            }
+            if (request.getObservacionRevision() == null || request.getObservacionRevision().isBlank()) {
+                throw new ReglaNegocioException(
+                        "Debe indicar una observacion o motivo al rechazar una cuenta de onboarding.");
+            }
+        }
+
+        if (request.getEstatus() == EstatusCuenta.CANCELADA
+                && transaccionServicioRepository.existsByCuentaIdAndEstatusIn(
+                        cuenta.getId(),
+                        List.of(EstatusTransaccion.EN_PROCESO, EstatusTransaccion.PENDIENTE_CONCILIACION))) {
+            throw new ReglaNegocioException(
+                    "No es posible cancelar una cuenta con transacciones en proceso o pendientes de conciliacion.");
+        }
+
         if (request.getEstatus() == EstatusCuenta.ACTIVA
                 && (cuenta.getCliente() == null || !cuenta.getCliente().isActivo())) {
-            throw new IllegalArgumentException(
+            throw new ReglaNegocioException(
                     "No se puede activar la cuenta porque el cliente titular no esta activo");
         }
 

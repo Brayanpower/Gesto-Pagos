@@ -6,9 +6,11 @@ import com.proyecto.servicios.entity.clientes.DomicilioCliente;
 import com.proyecto.servicios.entity.cuentas.Cuenta;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
 import com.proyecto.servicios.entity.cuentas.TipoCuenta;
+import com.proyecto.servicios.entity.gestopago.EstatusTransaccion;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.mapper.ClienteMapper;
 import com.proyecto.servicios.mapper.DomicilioClienteMapper;
@@ -20,6 +22,8 @@ import com.proyecto.servicios.repositorys.catalogos.*;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.clientes.DomicilioClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
 import com.proyecto.servicios.service.ClienteService;
@@ -62,6 +66,8 @@ public class ClienteServiceImpl implements ClienteService {
     private final DomicilioClienteMapper domicilioClienteMapper;
     private final PasswordEncoder passwordEncoder;
     private final AuthenticatedUserService authenticatedUserService;
+    private final RefreshTokenRepository refreshTokenRepository;
+    private final TransaccionServicioRepository transaccionServicioRepository;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -80,7 +86,9 @@ public class ClienteServiceImpl implements ClienteService {
             ClienteMapper clienteMapper,
             DomicilioClienteMapper domicilioClienteMapper,
             PasswordEncoder passwordEncoder,
-            AuthenticatedUserService authenticatedUserService) {
+            AuthenticatedUserService authenticatedUserService,
+            RefreshTokenRepository refreshTokenRepository,
+            TransaccionServicioRepository transaccionServicioRepository) {
         this.clienteRepository = clienteRepository;
         this.domicilioClienteRepository = domicilioClienteRepository;
         this.cuentaRepository = cuentaRepository;
@@ -96,6 +104,8 @@ public class ClienteServiceImpl implements ClienteService {
         this.domicilioClienteMapper = domicilioClienteMapper;
         this.passwordEncoder = passwordEncoder;
         this.authenticatedUserService = authenticatedUserService;
+        this.refreshTokenRepository = refreshTokenRepository;
+        this.transaccionServicioRepository = transaccionServicioRepository;
     }
 
     @Override
@@ -152,6 +162,7 @@ public class ClienteServiceImpl implements ClienteService {
                 .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
         CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
                 .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
+        validarJerarquiaDomicilio(colonia, municipio, estado, pais);
 
         DomicilioCliente domicilio = domicilioClienteMapper.toEntity(domDto);
         domicilio.setCliente(clienteGuardado);
@@ -294,17 +305,24 @@ public class ClienteServiceImpl implements ClienteService {
     }
 
     private void actualizarCorreoSiAplica(Cliente cliente, String nuevoCorreoRaw) {
-        if (nuevoCorreoRaw == null) {
+        if (nuevoCorreoRaw == null || nuevoCorreoRaw.isBlank()) {
             return;
         }
         String nuevoCorreo = nuevoCorreoRaw.trim().toLowerCase();
         if (!cliente.getCorreo().equalsIgnoreCase(nuevoCorreo)) {
-            if (clienteRepository.existsByCorreo(nuevoCorreo) || usuarioRepository.existsByCorreo(nuevoCorreo)) {
+            if (clienteRepository.existsByCorreoAndIdNot(nuevoCorreo, cliente.getId())
+                    || usuarioRepository.existsByCorreo(nuevoCorreo)) {
                 throw new DuplicateResourceException("El correo electronico ya pertenece a otro cliente/usuario: " + nuevoCorreo);
             }
             cliente.setCorreo(nuevoCorreo);
-            if (cliente.getUsuario() != null) {
-                cliente.getUsuario().setCorreo(nuevoCorreo);
+            Usuario usuario = cliente.getUsuario();
+            if (usuario != null) {
+                usuario.setCorreo(nuevoCorreo);
+                usuario.incrementarTokenVersion();
+                usuarioRepository.save(usuario);
+                if (usuario.getId() != null) {
+                    refreshTokenRepository.revocarTodosPorUsuarioId(usuario.getId());
+                }
             }
         }
     }
@@ -339,6 +357,7 @@ public class ClienteServiceImpl implements ClienteService {
                 .orElseThrow(() -> new CatalogoNotFoundException("Estado no encontrado con id: " + domDto.getEstadoId()));
         CatalogoPais pais = paisRepository.findById(domDto.getPaisId())
                 .orElseThrow(() -> new CatalogoNotFoundException("Pais no encontrado con id: " + domDto.getPaisId()));
+        validarJerarquiaDomicilio(colonia, municipio, estado, pais);
 
         domicilioClienteMapper.updateEntity(domDto, cliente.getDomicilio());
         cliente.getDomicilio().setColonia(colonia);
@@ -358,6 +377,12 @@ public class ClienteServiceImpl implements ClienteService {
         log.info("Iniciando baja logica para el cliente con ID: {}", id);
         Cliente cliente = buscarClienteActivo(id);
 
+        if (transaccionServicioRepository.existsByClienteIdAndEstatusIn(
+                id, List.of(EstatusTransaccion.EN_PROCESO, EstatusTransaccion.PENDIENTE_CONCILIACION))) {
+            throw new ReglaNegocioException(
+                    "No es posible dar de baja al cliente porque tiene transacciones de servicios en proceso o pendientes de conciliacion.");
+        }
+
         // 1. Desactivar cliente
         cliente.setActivo(false);
 
@@ -366,6 +391,9 @@ public class ClienteServiceImpl implements ClienteService {
             cliente.getUsuario().setActivo(false);
             cliente.getUsuario().incrementarTokenVersion();
             usuarioRepository.save(cliente.getUsuario());
+            if (cliente.getUsuario().getId() != null) {
+                refreshTokenRepository.revocarTodosPorUsuarioId(cliente.getUsuario().getId());
+            }
             log.info("Usuario de acceso ID {} desactivado por baja logica de cliente", cliente.getUsuario().getId());
         }
 
@@ -410,6 +438,25 @@ public class ClienteServiceImpl implements ClienteService {
         int edad = Period.between(fechaNacimiento, hoy).getYears();
         if (edad < 18) {
             throw new IllegalArgumentException("El cliente debe ser mayor de edad (minimo 18 anos). Edad calculada: " + edad + " anos");
+        }
+    }
+
+    private void validarJerarquiaDomicilio(
+            CatalogoColonia colonia,
+            CatalogoMunicipio municipio,
+            CatalogoEstado estado,
+            CatalogoPais pais) {
+        if (colonia.getCatalogoMunicipio() == null
+                || !municipio.getId().equals(colonia.getCatalogoMunicipio().getId())) {
+            throw new ReglaNegocioException("La colonia seleccionada no pertenece al municipio indicado.");
+        }
+        if (municipio.getCatalogoEstado() == null
+                || !estado.getId().equals(municipio.getCatalogoEstado().getId())) {
+            throw new ReglaNegocioException("El municipio seleccionado no pertenece al estado indicado.");
+        }
+        if (estado.getCatalogoPais() == null
+                || !pais.getId().equals(estado.getCatalogoPais().getId())) {
+            throw new ReglaNegocioException("El estado seleccionado no pertenece al pais indicado.");
         }
     }
 

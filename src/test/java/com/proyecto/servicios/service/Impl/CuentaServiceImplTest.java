@@ -11,6 +11,7 @@ import com.proyecto.servicios.mapper.CuentaMapper;
 import com.proyecto.servicios.model.banco.CuentaActualizacionRequest;
 import com.proyecto.servicios.model.banco.CuentaResponse;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,6 +40,7 @@ class CuentaServiceImplTest {
     @Mock private CuentaRepository cuentaRepository;
     @Mock private CuentaMapper cuentaMapper;
     @Mock private AuthenticatedUserService authenticatedUserService;
+    @Mock private TransaccionServicioRepository transaccionServicioRepository;
 
     @InjectMocks
     private CuentaServiceImpl servicio;
@@ -102,8 +104,49 @@ class CuentaServiceImplTest {
 
         CuentaActualizacionRequest request = new CuentaActualizacionRequest(EstatusCuenta.ACTIVA);
 
-        assertThrows(IllegalArgumentException.class,
+        assertThrows(ReglaNegocioException.class,
                 () -> servicio.revisarCuenta("1234567890", request));
+        verify(cuentaRepository, never()).save(any(Cuenta.class));
+    }
+
+    @Test
+    @DisplayName("Rechazar cuenta exige observacionRevision obligatoria y estatus previo PENDIENTE_REVISION")
+    void revisarCuenta_rechazoValidaciones_lanzaReglaNegocio() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
+
+        Cuenta pendiente = new Cuenta();
+        pendiente.setNumeroCuenta("1234567890");
+        pendiente.setEstatus(EstatusCuenta.PENDIENTE_REVISION);
+        pendiente.setCliente(clienteActivo(1L));
+        when(cuentaRepository.findWithClienteByNumeroCuenta("1234567890")).thenReturn(Optional.of(pendiente));
+
+        assertThrows(ReglaNegocioException.class,
+                () -> servicio.revisarCuenta("1234567890", new CuentaActualizacionRequest(EstatusCuenta.RECHAZADA, "  ")));
+
+        pendiente.setEstatus(EstatusCuenta.ACTIVA);
+        assertThrows(ReglaNegocioException.class,
+                () -> servicio.revisarCuenta("1234567890", new CuentaActualizacionRequest(EstatusCuenta.RECHAZADA, "Motivo")));
+    }
+
+    @Test
+    @DisplayName("Cancelar cuenta con transacciones en proceso o pendientes de conciliacion lanza ReglaNegocioException")
+    void revisarCuenta_cancelarConTxPendientes_lanzaReglaNegocio() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
+
+        Cuenta activa = new Cuenta();
+        activa.setId(5L);
+        activa.setNumeroCuenta("1234567890");
+        activa.setEstatus(EstatusCuenta.ACTIVA);
+        activa.setCliente(clienteActivo(1L));
+        when(cuentaRepository.findWithClienteByNumeroCuenta("1234567890")).thenReturn(Optional.of(activa));
+        when(transaccionServicioRepository.existsByCuentaIdAndEstatusIn(any(), any())).thenReturn(true);
+
+        assertThrows(ReglaNegocioException.class,
+                () -> servicio.revisarCuenta("1234567890", new CuentaActualizacionRequest(EstatusCuenta.CANCELADA, "Baja")));
         verify(cuentaRepository, never()).save(any(Cuenta.class));
     }
 

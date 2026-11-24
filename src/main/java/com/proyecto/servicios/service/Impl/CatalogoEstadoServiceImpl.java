@@ -22,7 +22,7 @@ public class CatalogoEstadoServiceImpl implements CatalogoEstadoService {
     private final CatalogoEstadoRepository repository;
     private final CatalogoPaisRepository paisRepository;
     private final CatalogoEstadoMapper mapper;
-    private static final String ACTION_1 = " no existe";
+    private static final String NO_EXISTE = " no existe";
     public CatalogoEstadoServiceImpl(CatalogoEstadoRepository repository,
                                     CatalogoPaisRepository paisRepository,
                                     CatalogoEstadoMapper mapper) {
@@ -56,7 +56,7 @@ public class CatalogoEstadoServiceImpl implements CatalogoEstadoService {
     @Transactional
     public CatalogoEstadoResponse crear(CatalogoEstadoRequest request) {
         CatalogoPais pais = paisRepository.findById(request.getPaisId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El pais con id " + request.getPaisId() + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("El pais con id " + request.getPaisId() + NO_EXISTE));
 
         CatalogoEstado entidad = mapper.toEntity(request);
         entidad.setEstado(request.getEstado().trim());
@@ -71,7 +71,7 @@ public class CatalogoEstadoServiceImpl implements CatalogoEstadoService {
     public CatalogoEstadoResponse actualizar(Long id, CatalogoEstadoRequest request) {
         CatalogoEstado entidad = buscar(id);
         CatalogoPais pais = paisRepository.findById(request.getPaisId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El pais con id " + request.getPaisId() + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("El pais con id " + request.getPaisId() + NO_EXISTE));
 
         mapper.updateEntity(request, entidad);
         entidad.setEstado(request.getEstado().trim());
@@ -91,6 +91,6 @@ public class CatalogoEstadoServiceImpl implements CatalogoEstadoService {
 
     private CatalogoEstado buscar(Long id) {
         return repository.findById(id)
-                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + id + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("El estado con id " + id + NO_EXISTE));
     }
 }

@@ -15,6 +15,7 @@ import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CatalogoNotFoundException;
 import com.proyecto.servicios.exception.DuplicateResourceException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.mapper.ClienteMapper;
 import com.proyecto.servicios.mapper.DomicilioClienteMapper;
@@ -32,6 +33,8 @@ import com.proyecto.servicios.repositorys.catalogos.CatalogoPaisRepository;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
 import com.proyecto.servicios.repositorys.clientes.DomicilioClienteRepository;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
+import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
+import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
 import org.junit.jupiter.api.DisplayName;
@@ -79,6 +82,8 @@ class ClienteServiceImplTest {
     @Mock private DomicilioClienteMapper domicilioClienteMapper;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private AuthenticatedUserService authenticatedUserService;
+    @Mock private RefreshTokenRepository refreshTokenRepository;
+    @Mock private TransaccionServicioRepository transaccionServicioRepository;
 
     @InjectMocks
     private ClienteServiceImpl servicio;
@@ -101,10 +106,22 @@ class ClienteServiceImplTest {
             c.setId(1L);
             return c;
         });
-        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(new CatalogoColonia()));
-        when(municipioRepository.findById(1L)).thenReturn(Optional.of(new CatalogoMunicipio()));
-        when(estadoRepository.findById(1L)).thenReturn(Optional.of(new CatalogoEstado()));
-        when(paisRepository.findById(1L)).thenReturn(Optional.of(new CatalogoPais()));
+        CatalogoPais pais = new CatalogoPais();
+        pais.setId(1L);
+        CatalogoEstado estado = new CatalogoEstado();
+        estado.setId(1L);
+        estado.setCatalogoPais(pais);
+        CatalogoMunicipio municipio = new CatalogoMunicipio();
+        municipio.setId(1L);
+        municipio.setCatalogoEstado(estado);
+        CatalogoColonia colonia = new CatalogoColonia();
+        colonia.setId(1L);
+        colonia.setCatalogoMunicipio(municipio);
+
+        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(colonia));
+        when(municipioRepository.findById(1L)).thenReturn(Optional.of(municipio));
+        when(estadoRepository.findById(1L)).thenReturn(Optional.of(estado));
+        when(paisRepository.findById(1L)).thenReturn(Optional.of(pais));
         when(domicilioClienteMapper.toEntity(any())).thenReturn(new DomicilioCliente());
         when(domicilioClienteRepository.save(any(DomicilioCliente.class))).thenAnswer(inv -> inv.getArgument(0));
         when(cuentaRepository.existsByNumeroCuenta(anyString())).thenReturn(false);
@@ -308,7 +325,98 @@ class ClienteServiceImplTest {
         assertEquals(1L, usuario.getTokenVersion());
         assertEquals(EstatusCuenta.INACTIVA, activa.getEstatus());
         verify(usuarioRepository).save(usuario);
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(1L);
         verify(cuentaRepository).save(activa);
+    }
+
+    @Test
+    @DisplayName("Onboarding rechaza jerarquia geografica inconsistente entre colonia/municipio/estado/pais")
+    void registrarCliente_jerarquiaDomicilioInconsistente_lanzaReglaNegocio() {
+        ClienteRegistroRequest request = requestValido();
+
+        when(clienteRepository.existsByCurp(anyString())).thenReturn(false);
+        when(clienteRepository.existsByRfc(anyString())).thenReturn(false);
+        when(clienteRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(usuarioRepository.existsByCorreo(anyString())).thenReturn(false);
+        when(generosRepository.findById(1L)).thenReturn(Optional.of(new CatalogoGeneros()));
+        when(nacionalidadRepository.findById(1L)).thenReturn(Optional.of(new CatalogoNacionalidad()));
+        when(estadoCivilRepository.findById(1L)).thenReturn(Optional.of(new CatalogoEstadoCivil()));
+        when(clienteMapper.toEntity(any())).thenReturn(new Cliente());
+        when(clienteRepository.save(any(Cliente.class))).thenAnswer(inv -> {
+            Cliente c = inv.getArgument(0);
+            c.setId(1L);
+            return c;
+        });
+
+        CatalogoPais pais = new CatalogoPais();
+        pais.setId(1L);
+        CatalogoEstado estado = new CatalogoEstado();
+        estado.setId(1L);
+        estado.setCatalogoPais(pais);
+        CatalogoMunicipio otroMunicipio = new CatalogoMunicipio();
+        otroMunicipio.setId(99L);
+        otroMunicipio.setCatalogoEstado(estado);
+        CatalogoMunicipio municipio = new CatalogoMunicipio();
+        municipio.setId(1L);
+        municipio.setCatalogoEstado(estado);
+        CatalogoColonia colonia = new CatalogoColonia();
+        colonia.setId(1L);
+        colonia.setCatalogoMunicipio(otroMunicipio);
+
+        when(coloniaRepository.findById(1L)).thenReturn(Optional.of(colonia));
+        when(municipioRepository.findById(1L)).thenReturn(Optional.of(municipio));
+        when(estadoRepository.findById(1L)).thenReturn(Optional.of(estado));
+        when(paisRepository.findById(1L)).thenReturn(Optional.of(pais));
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.registrarCliente(request));
+        verify(domicilioClienteRepository, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("Actualizar correo de cliente sincroniza usuario, incrementa tokenVersion y revoca refresh tokens")
+    void actualizar_cambioCorreo_sincronizaUsuarioYRevocaSesiones() {
+        Cliente cliente = new Cliente();
+        cliente.setId(3L);
+        cliente.setCorreo("juan.garcia@banco.com");
+        Usuario usuario = usuarioCliente(cliente);
+        usuario.setTokenVersion(0L);
+        cliente.setUsuario(usuario);
+
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuario);
+        when(authenticatedUserService.esAdmin(usuario)).thenReturn(false);
+        when(clienteRepository.findByIdAndActivoTrue(3L)).thenReturn(Optional.of(cliente));
+        when(clienteRepository.existsByCorreoAndIdNot("nuevo@banco.com", 3L)).thenReturn(false);
+        when(usuarioRepository.existsByCorreo("nuevo@banco.com")).thenReturn(false);
+        when(clienteRepository.save(cliente)).thenReturn(cliente);
+        when(clienteMapper.toResponse(cliente)).thenReturn(new ClienteResponse());
+
+        ClienteUpdateRequest request = new ClienteUpdateRequest();
+        request.setCorreo(" Nuevo@Banco.com ");
+
+        servicio.actualizar(3L, request);
+
+        assertEquals("nuevo@banco.com", cliente.getCorreo());
+        assertEquals("nuevo@banco.com", usuario.getCorreo());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(usuarioRepository).save(usuario);
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Baja logica bloqueada si existen transacciones en proceso o pendientes de conciliacion")
+    void darDeBaja_conTransaccionesPendientes_lanzaReglaNegocio() {
+        Usuario admin = usuarioAdmin();
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(admin);
+        when(authenticatedUserService.esAdmin(admin)).thenReturn(true);
+
+        Cliente cliente = new Cliente();
+        cliente.setId(7L);
+        cliente.setActivo(true);
+        when(clienteRepository.findByIdAndActivoTrue(7L)).thenReturn(Optional.of(cliente));
+        when(transaccionServicioRepository.existsByClienteIdAndEstatusIn(any(), any())).thenReturn(true);
+
+        assertThrows(ReglaNegocioException.class, () -> servicio.darDeBaja(7L));
+        verify(clienteRepository, never()).save(any());
     }
 
     private static Usuario usuarioCliente(Cliente cliente) {

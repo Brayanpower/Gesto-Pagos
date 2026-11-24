@@ -38,6 +38,7 @@ public interface ClienteMapper {
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "curp", ignore = true)
     @Mapping(target = "rfc", ignore = true)
+    @Mapping(target = "correo", ignore = true)
     @Mapping(target = "genero", ignore = true)
     @Mapping(target = "nacionalidad", ignore = true)
     @Mapping(target = "estadoCivil", ignore = true)
