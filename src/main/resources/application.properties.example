@@ -20,6 +20,8 @@ spring.datasource.driver-class-name=org.postgresql.Driver
 # ----------------------------------------------------------------------
 app.crypto.iv=${APP_CRYPTO_IV}
 app.crypto.key=${APP_CRYPTO_KEY}
+gestopago.crypto.key=${GESTOPAGO_CRYPTO_KEY:${app.crypto.key}}
+gestopago.crypto.iv=${GESTOPAGO_CRYPTO_IV:${app.crypto.iv}}
 jwt.secret=${JWT_SECRET}
 jwt.expiration=${JWT_EXPIRATION_MS:900000}
 jwt.issuer=${JWT_ISSUER:sistema-bancario-core}
@@ -30,6 +32,7 @@ app.auth.max-failed-attempts=${AUTH_MAX_FAILED_ATTEMPTS:5}
 app.auth.lockout-minutes=${AUTH_LOCKOUT_MINUTES:15}
 app.auth.rate-limit.max-attempts=${AUTH_RATE_LIMIT_MAX_ATTEMPTS:15}
 app.auth.rate-limit.window-seconds=${AUTH_RATE_LIMIT_WINDOW_SECONDS:60}
+app.auth.trust-forwarded-headers=${AUTH_TRUST_FORWARDED_HEADERS:true}
 app.auth.totp.issuer=${AUTH_TOTP_ISSUER:SistemaBancario}
 app.auth.totp.challenge-minutes=${AUTH_TOTP_CHALLENGE_MINUTES:5}
 app.auth.totp.max-attempts=${AUTH_TOTP_MAX_ATTEMPTS:3}
@@ -68,6 +71,7 @@ gestopago.tx.duplicate-window-seconds=${GESTOPAGO_TX_DUPLICATE_WINDOW_SECONDS:60
 gestopago.tx.conciliacion-inmediata=${GESTOPAGO_TX_CONCILIACION_INMEDIATA:true}
 gestopago.tx.conciliacion.cron=${GESTOPAGO_CONCILIACION_CRON:0 */5 * * * *}
 gestopago.tx.conciliacion.max-intentos=${GESTOPAGO_CONCILIACION_MAX_INTENTOS:5}
+gestopago.tx.conciliacion.en-proceso-timeout-minutes=${GESTOPAGO_CONCILIACION_EN_PROCESO_TIMEOUT_MIN:3}
 gestopago.verify.path=${GESTOPAGO_VERIFY_PATH:/sistema/service/verifyTx.do}
 
 # Timeouts Feign
