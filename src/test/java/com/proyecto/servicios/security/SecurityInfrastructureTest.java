@@ -154,13 +154,30 @@ class SecurityInfrastructureTest {
 
         @Test
         @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
-        @DisplayName("Respuestas incluyen X-Frame-Options DENY, Referrer-Policy, X-Content-Type-Options y Cache-Control")
+        @DisplayName("Respuestas incluyen X-Frame-Options DENY, Referrer-Policy, X-Content-Type-Options, Cache-Control, CSP, Permissions-Policy y HSTS")
         void respuestas_incluyenHeadersSeguros() throws Exception {
-            mockMvc.perform(get("/servicios/historial"))
+            mockMvc.perform(get("/servicios/historial").secure(true))
                     .andExpect(header().string("X-Frame-Options", "DENY"))
                     .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                     .andExpect(header().string("Referrer-Policy", "strict-origin-when-cross-origin"))
+                    .andExpect(header().string("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'"))
+                    .andExpect(header().string("Permissions-Policy", "geolocation=(), microphone=(), camera=()"))
+                    .andExpect(header().string("Strict-Transport-Security", "max-age=31536000 ; includeSubDomains"))
                     .andExpect(header().exists("Cache-Control"));
+        }
+
+        @Test
+        @DisplayName("Swagger UI y OpenAPI requieren ROLE_ADMIN cuando app.security.swagger-public=false")
+        void swagger_protegidoPorDefectoContraAnonimoYCliente() throws Exception {
+            mockMvc.perform(get("/v3/api-docs")).andExpect(status().isUnauthorized());
+            mockMvc.perform(get("/swagger-ui/index.html")).andExpect(status().isUnauthorized());
+        }
+
+        @Test
+        @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+        @DisplayName("ROLE_CLIENTE recibe 403 en Swagger/OpenAPI cuando app.security.swagger-public=false")
+        void swagger_rechazaRoleClienteCon403() throws Exception {
+            mockMvc.perform(get("/v3/api-docs")).andExpect(status().isForbidden());
         }
 
         @Test

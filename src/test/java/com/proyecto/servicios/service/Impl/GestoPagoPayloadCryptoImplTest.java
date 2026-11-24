@@ -15,8 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("Pruebas unitarias de GestoPagoPayloadCryptoImpl (AES/CBC/PKCS5Padding)")
 class GestoPagoPayloadCryptoImplTest {
 
-    private static final String VALID_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
-    private static final String VALID_IV = "p5ldmBPdd/9pjC0bDC/nSg==";
+    private static final String VALID_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+    private static final String VALID_IV = "MDEyMzQ1Njc4OWFiY2RlZg==";
 
     @Test
     @DisplayName("Cifra y descifra objetos SendTx con AES/CBC/PKCS5Padding")

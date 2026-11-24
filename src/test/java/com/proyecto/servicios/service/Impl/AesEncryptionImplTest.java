@@ -15,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 @DisplayName("Pruebas unitarias de AesEncryptionImpl (AES/GCM) y EncryptionHelperImpl")
 class AesEncryptionImplTest {
 
-    private static final String VALID_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
+    private static final String VALID_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
     @Test
     @DisplayName("Cifra y descifra con AES/GCM generando IV unico por operacion")

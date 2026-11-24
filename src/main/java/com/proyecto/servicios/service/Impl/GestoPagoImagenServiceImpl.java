@@ -9,16 +9,20 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.ClientHttpResponse;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -40,6 +44,7 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
     private static final String MSG_ID_SERVICIO_INVALIDO = "El idServicio debe ser un numero entero positivo.";
     private static final Pattern ID_SERVICIO_PATTERN = Pattern.compile("^[1-9]\\d{0,9}$");
     private static final int MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    private static final int STREAM_BUFFER_SIZE = 8192;
     private static final int MAX_CACHE_ENTRIES = 500;
     private static final int EVICTION_BATCH_SIZE = 50;
     private static final Duration CACHE_HIT_TTL = Duration.ofHours(24);
@@ -163,31 +168,76 @@ public class GestoPagoImagenServiceImpl implements GestoPagoImagenService {
             return ResultadoDescarga.transientError();
         }
 
-        ResponseEntity<byte[]> response = restClient.get()
+        ResultadoDescarga resultado = restClient.get()
                 .uri(pathTemplate, idServicio)
                 .headers(headers -> aplicarHeadersAutenticacion(headers, bearerToken))
-                .retrieve()
-                .toEntity(byte[].class);
+                .exchange((req, res) -> procesarRespuestaDescarga(res, idServicio, mediaTypePorDefecto));
 
-        if (!response.getStatusCode().is2xxSuccessful()) {
-            return response.getStatusCode().is5xxServerError()
+        return resultado != null ? resultado : ResultadoDescarga.transientError();
+    }
+
+    private ResultadoDescarga procesarRespuestaDescarga(
+            ClientHttpResponse res,
+            String idServicio,
+            MediaType mediaTypePorDefecto) throws IOException {
+        int statusCode = res.getStatusCode().value();
+        if (statusCode == HttpStatus.UNAUTHORIZED.value()) {
+            throw HttpClientErrorException.create(
+                    HttpStatus.UNAUTHORIZED,
+                    "Unauthorized",
+                    res.getHeaders(),
+                    new byte[0],
+                    StandardCharsets.UTF_8);
+        }
+        if (statusCode == HttpStatus.NOT_FOUND.value()) {
+            log.debug("Imagen GestoPago no encontrada para servicio={}", idServicio);
+            return ResultadoDescarga.notFound();
+        }
+        if (!res.getStatusCode().is2xxSuccessful()) {
+            return res.getStatusCode().is5xxServerError()
                     ? ResultadoDescarga.transientError()
                     : ResultadoDescarga.notFound();
         }
 
-        byte[] body = response.getBody();
-        if (body == null || body.length == 0 || body.length > MAX_IMAGE_BYTES) {
+        long contentLength = res.getHeaders().getContentLength();
+        if (contentLength > MAX_IMAGE_BYTES) {
+            log.warn("Imagen GestoPago excede tamano maximo permitido para servicio={} (Content-Length={})",
+                    idServicio, contentLength);
             return ResultadoDescarga.notFound();
         }
 
-        MediaType contentType = resolverContentType(response.getHeaders().getContentType(), mediaTypePorDefecto);
+        MediaType contentType = resolverContentType(res.getHeaders().getContentType(), mediaTypePorDefecto);
         if (contentType == null) {
             log.warn("Contenido no valido recibido desde GestoPago para servicio={} (Content-Type={})",
-                    idServicio, response.getHeaders().getContentType());
+                    idServicio, res.getHeaders().getContentType());
+            return ResultadoDescarga.notFound();
+        }
+
+        byte[] body = leerCuerpoAcotado(res.getBody(), MAX_IMAGE_BYTES);
+        if (body == null || body.length == 0) {
             return ResultadoDescarga.notFound();
         }
 
         return ResultadoDescarga.found(new ImagenRecurso(body, contentType));
+    }
+
+    private byte[] leerCuerpoAcotado(InputStream bodyStream, int maxBytes) throws IOException {
+        if (bodyStream == null) {
+            return new byte[0];
+        }
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        byte[] buffer = new byte[STREAM_BUFFER_SIZE];
+        int totalLeidos = 0;
+        int leidos;
+        while ((leidos = bodyStream.read(buffer)) != -1) {
+            totalLeidos += leidos;
+            if (totalLeidos > maxBytes) {
+                log.warn("Cuerpo de imagen GestoPago excede el limite de {} bytes durante la lectura", maxBytes);
+                return null;
+            }
+            output.write(buffer, 0, leidos);
+        }
+        return output.toByteArray();
     }
 
     private void aplicarHeadersAutenticacion(HttpHeaders headers, String bearerToken) {
