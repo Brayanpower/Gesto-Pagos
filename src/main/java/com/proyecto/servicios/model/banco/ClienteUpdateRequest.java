@@ -60,6 +60,7 @@ public class ClienteUpdateRequest {
     private String empresa;
 
     @DecimalMin(value = "0.01", message = "El ingreso mensual debe ser mayor a cero")
+    @Digits(integer = 13, fraction = 2, message = "El ingreso mensual debe tener hasta 13 digitos enteros y maximo 2 decimales")
     private BigDecimal ingresoMensual;
 
     @Valid

@@ -255,11 +255,16 @@ class UsuarioServiceImplTest {
     }
 
     @Test
-    @DisplayName("Actualizacion solo de correo sin cambiar password no revoca sesiones")
-    void actualizar_sinCambioPassword_noRevocaSesiones() {
+    @DisplayName("Actualizacion de correo sincroniza cliente, incrementa tokenVersion y revoca sesiones")
+    void actualizar_cambioCorreo_sincronizaClienteYRevocaSesiones() {
+        Cliente cliente = clienteActivo(1L);
+        cliente.setCorreo("cliente@banco.com");
         Usuario existente = usuarioConId(10L);
+        existente.setCliente(cliente);
+
         when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
         when(usuarioRepository.existsByCorreoAndIdNot("nuevo@banco.com", 10L)).thenReturn(false);
+        when(clienteRepository.existsByCorreoAndIdNot("nuevo@banco.com", 1L)).thenReturn(false);
         when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
         when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
 
@@ -270,8 +275,45 @@ class UsuarioServiceImplTest {
         UsuarioResponse response = servicio.actualizar(request);
 
         assertEquals(0, response.getCodigo());
+        assertEquals("nuevo@banco.com", cliente.getCorreo());
+        assertEquals(1L, existente.getTokenVersion());
+        verify(clienteRepository).save(cliente);
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+    }
+
+    @Test
+    @DisplayName("Actualizacion sin cambiar correo ni password no revoca sesiones")
+    void actualizar_sinCambioCorreoNiPassword_noRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioActualizacionRequest request = new UsuarioActualizacionRequest();
+        request.setId(10L);
+        request.setCorreo("cliente@banco.com");
+
+        UsuarioResponse response = servicio.actualizar(request);
+
+        assertEquals(0, response.getCodigo());
         assertEquals(0L, existente.getTokenVersion());
         verify(refreshTokenRepository, never()).revocarTodosPorUsuarioId(any());
+    }
+
+    @Test
+    @DisplayName("Actualizacion con correo ya usado por otro cliente lanza DuplicateResourceException")
+    void actualizar_correoEnOtroCliente_lanzaDuplicado() {
+        Usuario existente = usuarioConId(10L);
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.existsByCorreoAndIdNot("otro@banco.com", 10L)).thenReturn(false);
+        when(clienteRepository.existsByCorreo("otro@banco.com")).thenReturn(true);
+
+        UsuarioActualizacionRequest request = new UsuarioActualizacionRequest();
+        request.setId(10L);
+        request.setCorreo("otro@banco.com");
+
+        assertThrows(DuplicateResourceException.class, () -> servicio.actualizar(request));
+        verify(usuarioRepository, never()).save(any(Usuario.class));
     }
 
     @Test

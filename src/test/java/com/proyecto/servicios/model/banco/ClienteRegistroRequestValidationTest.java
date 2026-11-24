@@ -99,11 +99,15 @@ class ClienteRegistroRequestValidationTest {
     }
 
     @Test
-    @DisplayName("Saldo inicial negativo produce violacion")
+    @DisplayName("Saldo inicial negativo o con mas de 2 decimales produce violacion")
     void saldoInicialNegativo_produceViolacion() {
         ClienteRegistroRequest request = requestValido();
         request.setSaldoInicial(new BigDecimal("-1.00"));
         assertTrue(propiedadesConError(request).contains("saldoInicial"));
+
+        ClienteRegistroRequest decimalesInvalidos = requestValido();
+        decimalesInvalidos.setSaldoInicial(new BigDecimal("100.123"));
+        assertTrue(propiedadesConError(decimalesInvalidos).contains("saldoInicial"));
     }
 
     @Test

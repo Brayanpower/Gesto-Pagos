@@ -18,7 +18,7 @@ import java.util.List;
 @Service
 @Slf4j
 public class CatalogoColoniaServiceImpl implements CatalogoColoniaService {
-    private static final String ACTION_1 = " no existe";
+    private static final String NO_EXISTE = " no existe";
     private final CatalogoColoniaRepository repository;
     private final CatalogoMunicipioRepository municipioRepository;
     private final CatalogoColoniaMapper mapper;
@@ -56,7 +56,7 @@ public class CatalogoColoniaServiceImpl implements CatalogoColoniaService {
     @Transactional
     public CatalogoColoniaResponse crear(CatalogoColoniaRequest request) {
         CatalogoMunicipio municipio = municipioRepository.findById(request.getMunicipioId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + request.getMunicipioId() + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + request.getMunicipioId() + NO_EXISTE));
 
         CatalogoColonia entidad = mapper.toEntity(request);
         entidad.setColonia(request.getColonia().trim());
@@ -71,7 +71,7 @@ public class CatalogoColoniaServiceImpl implements CatalogoColoniaService {
     public CatalogoColoniaResponse actualizar(Long id, CatalogoColoniaRequest request) {
         CatalogoColonia entidad = buscar(id);
         CatalogoMunicipio municipio = municipioRepository.findById(request.getMunicipioId())
-                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + request.getMunicipioId() + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("El municipio con id " + request.getMunicipioId() + NO_EXISTE));
 
         mapper.updateEntity(request, entidad);
         entidad.setColonia(request.getColonia().trim());
@@ -91,6 +91,6 @@ public class CatalogoColoniaServiceImpl implements CatalogoColoniaService {
 
     private CatalogoColonia buscar(Long id) {
         return repository.findById(id)
-                .orElseThrow(() -> new CatalogoNotFoundException("La colonia con id " + id + ACTION_1));
+                .orElseThrow(() -> new CatalogoNotFoundException("La colonia con id " + id + NO_EXISTE));
     }
 }

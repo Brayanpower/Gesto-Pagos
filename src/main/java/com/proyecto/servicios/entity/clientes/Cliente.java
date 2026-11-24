@@ -59,12 +59,12 @@ public class Cliente {
     private LocalDate fechaNacimiento;
 
     @NotBlank(message = "La CURP es obligatoria")
-    @Pattern(regexp = "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[0-9A-Z]\\d$", message = "El formato de CURP no es valido (18 caracteres)")
+    @Pattern(regexp = "^[A-Z]{4}\\d{6}[HM][A-Z]{5}[\\dA-Z]\\d$", message = "El formato de CURP no es valido (18 caracteres)")
     @Column(nullable = false, unique = true, length = 18)
     private String curp;
 
     @NotBlank(message = "El RFC es obligatorio")
-    @Pattern(regexp = "^[A-Z&Ñ]{3,4}\\d{6}[A-V1-9][A-Z0-9]{2}$", message = "El formato de RFC no es valido (12 o 13 caracteres)")
+    @Pattern(regexp = "^[A-Z&Ñ]{3,4}\\d{6}[A-V1-9][A-Z\\d]{2}$", message = "El formato de RFC no es valido (12 o 13 caracteres)")
     @Column(nullable = false, unique = true, length = 13)
     private String rfc;
 
