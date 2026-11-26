@@ -31,6 +31,11 @@ public class LoginAuditService {
     public static final String EVENTO_REFRESH_REUSO = "REFRESH_REUSO_DETECTADO";
     public static final String EVENTO_LOGOUT = "LOGOUT";
     public static final String EVENTO_LOGOUT_ALL = "LOGOUT_ALL";
+    public static final String EVENTO_SESION_CONFLICTO = "SESION_ACTIVA_CONFLICTO";
+    public static final String EVENTO_SESION_FORZADA = "SESION_ANTERIOR_CERRADA";
+    public static final String EVENTO_TOTP_RECUPERACION_EXITO = "TOTP_RECUPERACION_EXITO";
+    public static final String EVENTO_TOTP_RECUPERACION_FALLIDA = "TOTP_RECUPERACION_FALLIDA";
+    public static final String EVENTO_TOTP_RESET_ADMIN = "TOTP_RESET_ADMIN";
 
     private static final int MAX_CORREO_LENGTH = 100;
     private static final int MAX_EVENTO_LENGTH = 40;

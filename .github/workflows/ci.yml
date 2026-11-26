@@ -1,0 +1,71 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [develop, master]
+  pull_request:
+    branches: [develop, master]
+
+jobs:
+  build-and-test:
+    name: Compilación, pruebas automatizadas y cobertura
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Dar permisos de ejecución a Gradle Wrapper
+        run: chmod +x gradlew
+
+      - name: Ejecutar pruebas unitarias, de integración y reporte JaCoCo
+        run: ./gradlew test jacocoTestReport --no-daemon --console=plain
+
+      - name: Publicar resultados de pruebas JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-test-results
+          path: build/test-results/test/*.xml
+
+      - name: Publicar reporte de cobertura JaCoCo
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage-report
+          path: build/reports/jacoco/test/
+
+  sonarqube:
+    name: Análisis estático SonarQube
+    needs: build-and-test
+    if: ${{ secrets.SONAR_TOKEN != '' && secrets.SONAR_HOST_URL != '' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configurar JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Dar permisos de ejecución a Gradle Wrapper
+        run: chmod +x gradlew
+
+      - name: Ejecutar análisis SonarQube
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        run: ./gradlew sonar --no-daemon --console=plain

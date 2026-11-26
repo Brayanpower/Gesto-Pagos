@@ -15,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -56,5 +57,11 @@ public class UsuarioController {
     @Operation(summary = "Activar o desactivar usuario", description = "Cambia el estado lógico del usuario a partir de su id enviado en el body")
     public ResponseEntity<UsuarioResponse> cambiarEstado(@Valid @RequestBody UsuarioEstadoRequest request) {
         return new ResponseEntity<>(usuarioService.cambiarEstado(request), HttpStatus.OK);
+    }
+
+    @PostMapping(value = "/{id}/reset-totp", produces = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "Restablecer 2FA TOTP de un usuario (Solo ADMIN)", description = "Elimina el secreto TOTP actual y códigos de respaldo, cierra sesiones activas y obliga a re-enrolar en el siguiente inicio de sesión")
+    public ResponseEntity<UsuarioResponse> resetearTotp(@PathVariable("id") Long id) {
+        return new ResponseEntity<>(usuarioService.resetearTotp(id), HttpStatus.OK);
     }
 }

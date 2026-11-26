@@ -1,13 +1,17 @@
 package com.proyecto.servicios.service.Impl;
 
+import com.proyecto.servicios.entity.seguridad.RefreshToken;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CuentaBloqueadaException;
+import com.proyecto.servicios.exception.SesionActivaExistenteException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.CustomUserDetails;
@@ -29,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -53,6 +58,7 @@ public class AuthServiceImpl implements AuthService {
     private final LoginAuditService loginAuditService;
     private final LoginRateLimiter loginRateLimiter;
     private final MfaService mfaService;
+    private final MfaRecoveryService mfaRecoveryService;
 
     @Value("${app.auth.max-failed-attempts:5}")
     private int maxFailedAttempts = 5;
@@ -67,7 +73,8 @@ public class AuthServiceImpl implements AuthService {
             RefreshTokenService refreshTokenService,
             LoginAuditService loginAuditService,
             LoginRateLimiter loginRateLimiter,
-            MfaService mfaService) {
+            MfaService mfaService,
+            MfaRecoveryService mfaRecoveryService) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
@@ -75,13 +82,15 @@ public class AuthServiceImpl implements AuthService {
         this.loginAuditService = loginAuditService;
         this.loginRateLimiter = loginRateLimiter;
         this.mfaService = mfaService;
+        this.mfaRecoveryService = mfaRecoveryService;
     }
 
     @Override
     @Transactional(noRollbackFor = {
             BadCredentialsException.class,
             CuentaBloqueadaException.class,
-            DisabledException.class
+            DisabledException.class,
+            SesionActivaExistenteException.class
     })
     public AuthResponse login(LoginRequest request) {
         return ejecutarLogin(request, ClientMetadata.desconocido());
@@ -91,7 +100,8 @@ public class AuthServiceImpl implements AuthService {
     @Transactional(noRollbackFor = {
             BadCredentialsException.class,
             CuentaBloqueadaException.class,
-            DisabledException.class
+            DisabledException.class,
+            SesionActivaExistenteException.class
     })
     public AuthResponse login(LoginRequest request, ClientMetadata metadata) {
         return ejecutarLogin(request, metadata);
@@ -101,14 +111,17 @@ public class AuthServiceImpl implements AuthService {
     @Transactional(noRollbackFor = {
             BadCredentialsException.class,
             CuentaBloqueadaException.class,
-            DisabledException.class
+            DisabledException.class,
+            SesionActivaExistenteException.class
     })
     public AuthResponse verificarTotp(TotpVerificationRequest request, ClientMetadata metadata) {
         ClientMetadata meta = normalizarMetadata(metadata);
         String challengeToken = request != null ? request.getChallengeToken() : null;
         String codigo = request != null ? request.getCodigo() : null;
+        boolean forzarCierre = Boolean.TRUE.equals(request != null ? request.getForzarCierreSesionAnterior() : null);
 
         Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+        boolean requirioEnrolamiento = usuarioDesafio != null && !usuarioDesafio.isTotpHabilitado();
         String correoRateLimit = usuarioDesafio != null ? usuarioDesafio.getCorreo() : null;
         loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), correoRateLimit);
 
@@ -147,7 +160,106 @@ public class AuthServiceImpl implements AuthService {
         }
 
         validarUsuarioYClienteActivos(usuario, usuario.getCorreo(), meta);
-        return completarLoginExitoso(usuario, meta, now);
+        validarOForzarSesionUnica(usuario, forzarCierre, meta);
+        AuthResponse response = completarLoginExitoso(usuario, meta, now);
+        if (requirioEnrolamiento && usuario.isTotpHabilitado()) {
+            response.setCodigosRecuperacion(mfaRecoveryService.generarCodigosRecuperacion(usuario));
+        }
+        return response;
+    }
+
+    @Override
+    @Transactional(noRollbackFor = {
+            BadCredentialsException.class,
+            CuentaBloqueadaException.class,
+            DisabledException.class
+    })
+    public AuthResponse recuperarAccesoTotp(TotpRecoveryRequest request, ClientMetadata metadata) {
+        ClientMetadata meta = normalizarMetadata(metadata);
+        String correo = normalizarCorreo(request != null ? request.getCorreo() : null);
+        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), correo);
+
+        Usuario usuario = usuarioRepository.findWithClienteByCorreo(correo).orElse(null);
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+
+        if (estaBloqueado(usuario, now)) {
+            loginAuditService.registrarEvento(
+                    usuario, correo, LoginAuditService.EVENTO_CUENTA_BLOQUEADA, false, meta,
+                    "Cuenta bloqueada temporalmente por intentos fallidos");
+            throw new CuentaBloqueadaException(MSG_CUENTA_BLOQUEADA);
+        }
+
+        String rawPassword = request != null ? request.getPassword() : null;
+        if (usuario == null) {
+            if (rawPassword != null) {
+                passwordEncoder.matches(rawPassword, DUMMY_BCRYPT_HASH);
+            }
+            throw registrarFalloPassword(null, correo, meta, now);
+        }
+        if (rawPassword == null || !passwordEncoder.matches(rawPassword, usuario.getPasswordHash())) {
+            throw registrarFalloPassword(usuario, correo, meta, now);
+        }
+
+        validarUsuarioYClienteActivos(usuario, correo, meta);
+
+        String codigoRecuperacion = request.getCodigoRecuperacion();
+        if (!mfaRecoveryService.consumirCodigoRecuperacion(usuario, codigoRecuperacion)) {
+            int intentos = incrementarIntentosFallidos(usuario);
+            loginAuditService.registrarEvento(
+                    usuario, correo, LoginAuditService.EVENTO_TOTP_RECUPERACION_FALLIDA, false, meta,
+                    "Codigo de recuperacion 2FA invalido o ya utilizado");
+            if (excedeLimiteIntentos(intentos)) {
+                throw bloquearUsuarioPorIntentos(
+                        usuario, correo, meta, now,
+                        "Cuenta bloqueada tras superar intentos fallidos de recuperacion 2FA");
+            }
+            usuarioRepository.save(usuario);
+            throw new BadCredentialsException("Codigo de recuperacion invalido o ya utilizado");
+        }
+
+        limpiarIntentosFallidos(usuario);
+        usuario.setTotpHabilitado(false);
+        usuario.setTotpSecretEnc(null);
+        usuario.setTotpConfiguradoEn(null);
+        usuario.setTotpUltimoPaso(null);
+        usuario.incrementarTokenVersion();
+        usuarioRepository.save(usuario);
+        refreshTokenService.revocarTodasLasSesiones(usuario.getId());
+
+        loginAuditService.registrarEvento(
+                usuario, correo, LoginAuditService.EVENTO_TOTP_RECUPERACION_EXITO, true, meta,
+                "Recuperacion 2FA aprobada; sesiones cerradas y reenrolamiento TOTP iniciado");
+        return iniciarDesafioTotp(usuario, correo, meta);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SesionActivaResponse consultarSesionActiva() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null || !auth.isAuthenticated() || "anonymousUser".equals(auth.getPrincipal())) {
+            throw new InsufficientAuthenticationException("Se requiere autenticacion valida para consultar la sesion");
+        }
+        String correo = normalizarCorreo(auth.getName());
+        Usuario usuario = usuarioRepository.findWithClienteByCorreo(correo)
+                .orElseThrow(() -> new InsufficientAuthenticationException("Usuario autenticado no encontrado"));
+        Optional<RefreshToken> sesionOpt = refreshTokenService.obtenerSesionActivaVigente(usuario.getId());
+        if (sesionOpt.isEmpty()) {
+            return SesionActivaResponse.builder()
+                    .activa(false)
+                    .correo(usuario.getCorreo())
+                    .tokenVersion(usuario.getTokenVersion())
+                    .build();
+        }
+        RefreshToken sesion = sesionOpt.get();
+        return SesionActivaResponse.builder()
+                .activa(true)
+                .correo(usuario.getCorreo())
+                .ipOrigen(sesion.getIpOrigen())
+                .userAgent(sesion.getUserAgent())
+                .fechaInicio(sesion.getFechaCreacion())
+                .expiraEn(sesion.getExpiraEn())
+                .tokenVersion(usuario.getTokenVersion())
+                .build();
     }
 
     @Override
@@ -238,16 +350,21 @@ public class AuthServiceImpl implements AuthService {
         }
 
         validarUsuarioYClienteActivos(usuario, correo, meta);
+        boolean forzarCierre = Boolean.TRUE.equals(request != null ? request.getForzarCierreSesionAnterior() : null);
 
         if (!usuario.isTotpObligatorio()) {
+            validarOForzarSesionUnica(usuario, forzarCierre, meta);
             return completarLoginExitoso(usuario, meta, now);
         }
 
         String codigoTotp = request.getCodigoTotp();
         if (usuario.isTotpHabilitado() && tieneTexto(codigoTotp)) {
-            return procesarLoginConTotpDirecto(usuario, codigoTotp.trim(), correo, meta, now);
+            return procesarLoginConTotpDirecto(usuario, codigoTotp.trim(), forzarCierre, correo, meta, now);
         }
 
+        if (!forzarCierre) {
+            verificarAusenciaDeSesionActiva(usuario, meta);
+        }
         return iniciarDesafioTotp(usuario, correo, meta);
     }
 
@@ -282,6 +399,7 @@ public class AuthServiceImpl implements AuthService {
     private AuthResponse procesarLoginConTotpDirecto(
             Usuario usuario,
             String codigoTotp,
+            boolean forzarCierre,
             String correo,
             ClientMetadata meta,
             LocalDateTime now) {
@@ -301,7 +419,46 @@ public class AuthServiceImpl implements AuthService {
             throw ex;
         }
 
+        validarOForzarSesionUnica(usuario, forzarCierre, meta);
         return completarLoginExitoso(usuario, meta, now);
+    }
+
+    private void verificarAusenciaDeSesionActiva(Usuario usuario, ClientMetadata meta) {
+        Optional<RefreshToken> sesionOpt = refreshTokenService.obtenerSesionActivaVigente(usuario.getId());
+        if (sesionOpt.isPresent()) {
+            RefreshToken sesion = sesionOpt.get();
+            loginAuditService.registrarEvento(
+                    usuario, usuario.getCorreo(), LoginAuditService.EVENTO_SESION_CONFLICTO, false, meta,
+                    "Intento de inicio de sesion rechazado por sesion activa existente");
+            throw new SesionActivaExistenteException(
+                    "Ya existe una sesion activa en otro dispositivo. Debe cerrar la sesion anterior para continuar.",
+                    sesion.getIpOrigen(),
+                    sesion.getUserAgent(),
+                    sesion.getFechaCreacion());
+        }
+    }
+
+    private void validarOForzarSesionUnica(Usuario usuario, boolean forzarCierre, ClientMetadata meta) {
+        Optional<RefreshToken> sesionOpt = refreshTokenService.obtenerSesionActivaVigente(usuario.getId());
+        if (sesionOpt.isEmpty()) {
+            return;
+        }
+        RefreshToken sesion = sesionOpt.get();
+        if (!forzarCierre) {
+            loginAuditService.registrarEvento(
+                    usuario, usuario.getCorreo(), LoginAuditService.EVENTO_SESION_CONFLICTO, false, meta,
+                    "Intento de inicio de sesion rechazado por sesion activa existente");
+            throw new SesionActivaExistenteException(
+                    "Ya existe una sesion activa en otro dispositivo. Debe cerrar la sesion anterior para continuar.",
+                    sesion.getIpOrigen(),
+                    sesion.getUserAgent(),
+                    sesion.getFechaCreacion());
+        }
+        refreshTokenService.revocarTodasLasSesiones(usuario.getId());
+        usuario.incrementarTokenVersion();
+        loginAuditService.registrarEvento(
+                usuario, usuario.getCorreo(), LoginAuditService.EVENTO_SESION_FORZADA, true, meta,
+                "Sesion anterior cerrada por confirmacion de nuevo inicio de sesion");
     }
 
     private AuthResponse iniciarDesafioTotp(Usuario usuario, String correo, ClientMetadata meta) {

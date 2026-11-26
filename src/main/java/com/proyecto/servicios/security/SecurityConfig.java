@@ -91,10 +91,11 @@ public class SecurityConfig {
                     auth.requestMatchers(HttpMethod.POST,
                                     "/auth/login",
                                     "/auth/totp/verificar",
+                                    "/auth/totp/recuperar",
                                     "/auth/refresh",
                                     "/auth/logout")
                             .permitAll()
-                            .requestMatchers("/auth/logout-all", "/auth/auditoria").authenticated()
+                            .requestMatchers("/auth/logout-all", "/auth/auditoria", "/auth/sesion-activa").authenticated()
                             .requestMatchers(HttpMethod.POST, "/clientes").permitAll()
                             .requestMatchers(HttpMethod.GET, "/catalogos/**").permitAll()
                             .requestMatchers("/catalogos/**").hasRole("ADMIN");
@@ -106,6 +107,8 @@ public class SecurityConfig {
                     auth.requestMatchers("/actuator/health", "/actuator/info").permitAll()
                             .requestMatchers(HttpMethod.GET,
                                     "/gestopago/catalogo",
+                                    "/gestopago/catalogo/categorias",
+                                    "/gestopago/catalogo/*/*",
                                     "/gestopago/servicios/*/logo",
                                     "/gestopago/servicios/*/referencia")
                             .permitAll()

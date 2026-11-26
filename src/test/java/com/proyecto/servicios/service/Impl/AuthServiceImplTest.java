@@ -1,14 +1,18 @@
 package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.clientes.Cliente;
+import com.proyecto.servicios.entity.seguridad.RefreshToken;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CuentaBloqueadaException;
+import com.proyecto.servicios.exception.SesionActivaExistenteException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.CustomUserDetails;
@@ -67,6 +71,7 @@ class AuthServiceImplTest {
     @Mock private LoginAuditService loginAuditService;
     @Mock private LoginRateLimiter loginRateLimiter;
     @Mock private MfaService mfaService;
+    @Mock private MfaRecoveryService mfaRecoveryService;
 
     @InjectMocks
     private AuthServiceImpl servicio;
@@ -483,6 +488,157 @@ class AuthServiceImplTest {
 
         assertEquals(expected, result);
         verify(loginAuditService).consultarAuditoria(CORREO, pageable);
+    }
+
+    @Test
+    @DisplayName("Sesion unica: login con sesion activa y sin forzar lanza SesionActivaExistenteException sin emitir JWT")
+    void login_conSesionActivaSinForzar_lanzaSesionActivaExistente() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshToken sesionPrevia = new RefreshToken();
+        sesionPrevia.setIpOrigen("10.0.0.5");
+        sesionPrevia.setUserAgent("FlutterApp/1.0");
+        sesionPrevia.setFechaCreacion(LocalDateTime.now(ZoneId.systemDefault()).minusMinutes(10));
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(refreshTokenService.obtenerSesionActivaVigente(10L)).thenReturn(Optional.of(sesionPrevia));
+
+        SesionActivaExistenteException ex = assertThrows(
+                SesionActivaExistenteException.class,
+                () -> servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA));
+
+        assertEquals("10.0.0.5", ex.getIpOrigenActiva());
+        assertEquals("FlutterApp/1.0", ex.getUserAgentActivo());
+        verify(jwtService, never()).generateToken(anyMap(), any());
+        verify(refreshTokenService, never()).revocarTodasLasSesiones(any());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_SESION_CONFLICTO),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Sesion unica: login 1 paso con forzarCierreSesionAnterior=true revoca sesion previa, incrementa tokenVersion y emite JWT")
+    void login_conSesionActivaYForzarCierre_revocaAnteriorYEmiteTokens() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshToken sesionPrevia = new RefreshToken();
+        sesionPrevia.setIpOrigen("10.0.0.5");
+        sesionPrevia.setUserAgent("FlutterApp/1.0");
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(refreshTokenService.obtenerSesionActivaVigente(10L)).thenReturn(Optional.of(sesionPrevia));
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-web-nuevo");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-web-nuevo");
+
+        LoginRequest req = new LoginRequest(CORREO, PASSWORD, "123456");
+        req.setForzarCierreSesionAnterior(true);
+
+        AuthResponse response = servicio.login(req, METADATA);
+
+        assertEquals("jwt-web-nuevo", response.getToken());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(mfaService).validarCodigoDirectoEnLogin(usuario, "123456");
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_SESION_FORZADA),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("verificarTotp tras enrolamiento inicial devuelve codigos de recuperacion y aplica control de sesion unica")
+    void verificarTotp_enrolamiento_devuelveCodigosRecuperacion() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-enroll")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioYCodigo("chal-enroll", "123456")).thenAnswer(inv -> {
+            usuario.setTotpHabilitado(true);
+            return usuario;
+        });
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-enrolled");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-enrolled");
+        when(mfaRecoveryService.generarCodigosRecuperacion(usuario)).thenReturn(List.of("ABCD-2345", "WXYZ-6789"));
+
+        AuthResponse response = servicio.verificarTotp(new TotpVerificationRequest("chal-enroll", "123456"), METADATA);
+
+        assertEquals("jwt-enrolled", response.getToken());
+        assertEquals(List.of("ABCD-2345", "WXYZ-6789"), response.getCodigosRecuperacion());
+        verify(mfaRecoveryService).generarCodigosRecuperacion(usuario);
+    }
+
+    @Test
+    @DisplayName("recuperarAccesoTotp valido resetea TOTP, revoca sesiones, incrementa tokenVersion e inicia nuevo enrollment")
+    void recuperarAccesoTotp_valido_reseteaTotpEIniciaEnrollment() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setTotpSecretEnc("ENC:viejo");
+        usuario.setTotpUltimoPaso(55L);
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaRecoveryService.consumirCodigoRecuperacion(usuario, "ABCD-2345")).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA)).thenReturn(
+                new MfaService.ChallengeInitResult("chal-recovery", true, "NEWSECRET", "otpauth://totp/nuevo"));
+
+        AuthResponse response = servicio.recuperarAccesoTotp(
+                new TotpRecoveryRequest(CORREO, PASSWORD, "ABCD-2345"), METADATA);
+
+        assertTrue(response.getRequiereTotp());
+        assertTrue(response.getTotpConfiguracionRequerida());
+        assertEquals("chal-recovery", response.getChallengeToken());
+        assertEquals("NEWSECRET", response.getTotpSecret());
+        assertFalse(usuario.isTotpHabilitado());
+        assertNull(usuario.getTotpSecretEnc());
+        assertNull(usuario.getTotpUltimoPaso());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_RECUPERACION_EXITO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("recuperarAccesoTotp con codigo invalido incrementa intentos fallidos, audita y bloquea al exceder")
+    void recuperarAccesoTotp_codigoInvalido_bloqueaAlExceder() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(4);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaRecoveryService.consumirCodigoRecuperacion(usuario, "ZZZZ-9999")).thenReturn(false);
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.recuperarAccesoTotp(
+                new TotpRecoveryRequest(CORREO, PASSWORD, "ZZZZ-9999"), METADATA));
+
+        assertEquals(5, usuario.getIntentosFallidos());
+        assertNotNull(usuario.getBloqueadoHasta());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_RECUPERACION_FALLIDA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("consultarSesionActiva retorna metadatos cuando existe sesion vigente y activa=false si no")
+    void consultarSesionActiva_retornaEstado() {
+        Usuario usuario = usuarioActivo(true, true);
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(CORREO, "n/a", List.of()));
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+
+        RefreshToken sesion = new RefreshToken();
+        sesion.setIpOrigen("198.51.100.40");
+        sesion.setUserAgent("WebBrowser/1.0");
+        sesion.setFechaCreacion(LocalDateTime.now(ZoneId.systemDefault()).minusMinutes(5));
+        sesion.setExpiraEn(LocalDateTime.now(ZoneId.systemDefault()).plusDays(7));
+        when(refreshTokenService.obtenerSesionActivaVigente(10L))
+                .thenReturn(Optional.of(sesion))
+                .thenReturn(Optional.empty());
+
+        SesionActivaResponse activa = servicio.consultarSesionActiva();
+        assertTrue(activa.isActiva());
+        assertEquals("198.51.100.40", activa.getIpOrigen());
+        assertEquals("WebBrowser/1.0", activa.getUserAgent());
+
+        SesionActivaResponse inactiva = servicio.consultarSesionActiva();
+        assertFalse(inactiva.isActiva());
     }
 
     private static Usuario usuarioActivo(boolean totpObligatorio, boolean totpHabilitado) {

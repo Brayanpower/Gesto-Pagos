@@ -73,7 +73,7 @@ public class PagoServicioController {
     @PreAuthorize("hasRole('CLIENTE')")
     @Operation(
             summary = "Consultar historial de compras del cliente (paginado)",
-            description = "Retorna el historial paginado de recargas y pagos de servicios realizados con la cuenta de ahorro del cliente autenticado"
+            description = "Retorna el historial paginado de recargas y pagos de servicios del cliente autenticado. Por defecto muestra únicamente operaciones EXITOSA; permite indicar otro estatus o incluirTodosEstatus=true"
     )
     public ResponseEntity<PageResponse<HistorialCompraResponse>> obtenerHistorialCompras(
             @Parameter(description = "Fecha inicial del filtro en formato yyyy-MM-dd", example = "2026-10-01")
@@ -87,8 +87,11 @@ public class PagoServicioController {
             @Parameter(description = "Número de cuenta del cliente (opcional)", example = "1234567890")
             @RequestParam(value = "numeroCuenta", required = false) String numeroCuenta,
 
-            @Parameter(description = "Filtrar por estatus de la transacción (opcional)")
+            @Parameter(description = "Filtrar por estatus de la transacción (por defecto EXITOSA)")
             @RequestParam(value = "estatus", required = false) EstatusTransaccion estatus,
+
+            @Parameter(description = "Incluir todos los estatus cuando no se especifica estatus", example = "false")
+            @RequestParam(value = "incluirTodosEstatus", defaultValue = "false") boolean incluirTodosEstatus,
 
             @Parameter(description = "Número de página (inicia en 0)", example = "0")
             @RequestParam(value = "page", defaultValue = "0") int page,
@@ -108,10 +111,13 @@ public class PagoServicioController {
         if (size < 1 || size > 100) {
             throw new ReglaNegocioException("El tamano de pagina debe estar entre 1 y 100.");
         }
+        EstatusTransaccion estatusEfectivo = estatus != null
+                ? estatus
+                : (incluirTodosEstatus ? null : EstatusTransaccion.EXITOSA);
         Sort.Direction direction = "ASC".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
         Pageable pageable = PageRequest.of(page, size, Sort.by(direction, sortBy));
         PageResponse<HistorialCompraResponse> historial = pagoServicioService.obtenerHistorialCompras(
-                fechaInicio, fechaFin, numeroCuenta, estatus, pageable);
+                fechaInicio, fechaFin, numeroCuenta, estatusEfectivo, pageable);
         return new ResponseEntity<>(historial, HttpStatus.OK);
     }
 

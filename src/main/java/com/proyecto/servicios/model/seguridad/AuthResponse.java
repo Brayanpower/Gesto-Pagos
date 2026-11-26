@@ -7,6 +7,8 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.util.List;
+
 @Getter
 @Setter
 @NoArgsConstructor
@@ -27,6 +29,7 @@ public class AuthResponse extends GenericResponse {
     private String challengeToken;
     private String totpSecret;
     private String otpauthUri;
+    private List<String> codigosRecuperacion;
 
     public AuthResponse(String token, String correo, String rol, Long clienteId, String nombreCompleto) {
         super();

@@ -6,6 +6,8 @@ import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import org.springframework.data.domain.Pageable;
 
@@ -16,6 +18,10 @@ public interface AuthService {
     AuthResponse login(LoginRequest request, ClientMetadata metadata);
 
     AuthResponse verificarTotp(TotpVerificationRequest request, ClientMetadata metadata);
+
+    AuthResponse recuperarAccesoTotp(TotpRecoveryRequest request, ClientMetadata metadata);
+
+    SesionActivaResponse consultarSesionActiva();
 
     AuthResponse refresh(RefreshTokenRequest request, ClientMetadata metadata);
 

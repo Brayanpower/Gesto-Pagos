@@ -27,8 +27,16 @@ public class LoginRequest {
     @Pattern(regexp = "^\\d{6}$", message = "El codigo OTP debe contener exactamente 6 digitos")
     private String codigoTotp;
 
+    private Boolean forzarCierreSesionAnterior;
+
     public LoginRequest(String correo, String password) {
         this.correo = correo;
         this.password = password;
+    }
+
+    public LoginRequest(String correo, String password, String codigoTotp) {
+        this.correo = correo;
+        this.password = password;
+        this.codigoTotp = codigoTotp;
     }
 }

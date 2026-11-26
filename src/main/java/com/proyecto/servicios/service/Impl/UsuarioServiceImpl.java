@@ -14,6 +14,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.MfaRecoveryCodeRepository;
 import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
@@ -40,18 +41,21 @@ public class UsuarioServiceImpl implements UsuarioService {
     private final UsuarioMapper usuarioMapper;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
 
     public UsuarioServiceImpl(
             UsuarioRepository usuarioRepository,
             ClienteRepository clienteRepository,
             UsuarioMapper usuarioMapper,
             PasswordEncoder passwordEncoder,
-            RefreshTokenRepository refreshTokenRepository) {
+            RefreshTokenRepository refreshTokenRepository,
+            MfaRecoveryCodeRepository mfaRecoveryCodeRepository) {
         this.usuarioRepository = usuarioRepository;
         this.clienteRepository = clienteRepository;
         this.usuarioMapper = usuarioMapper;
         this.passwordEncoder = passwordEncoder;
         this.refreshTokenRepository = refreshTokenRepository;
+        this.mfaRecoveryCodeRepository = mfaRecoveryCodeRepository;
     }
 
     @Override
@@ -236,6 +240,28 @@ public class UsuarioServiceImpl implements UsuarioService {
         log.info("Usuario con ID {} {}", guardado.getId(), guardado.isActivo() ? "activado" : "desactivado");
 
         return construirResponse(guardado, mensaje);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UsuarioResponse resetearTotp(Long usuarioId) {
+        Usuario usuario = usuarioRepository.findById(usuarioId)
+                .orElseThrow(() -> new UsuarioNotFoundException(usuarioId));
+
+        usuario.setTotpHabilitado(false);
+        usuario.setTotpSecretEnc(null);
+        usuario.setTotpConfiguradoEn(null);
+        usuario.setTotpUltimoPaso(null);
+        usuario.incrementarTokenVersion();
+
+        Usuario guardado = usuarioRepository.save(usuario);
+        refreshTokenRepository.revocarTodosPorUsuarioId(usuarioId);
+        mfaRecoveryCodeRepository.deleteByUsuarioId(usuarioId);
+        log.info("TOTP restablecido por administrador para usuario ID {}", usuarioId);
+
+        return construirResponse(
+                guardado,
+                "TOTP restablecido; el usuario debera reconfigurar Google Authenticator en su proximo inicio de sesion");
     }
 
     private UsuarioResponse construirResponse(Usuario usuario, String mensaje) {

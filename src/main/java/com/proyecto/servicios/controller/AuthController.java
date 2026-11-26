@@ -8,6 +8,8 @@ import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.security.ClientIpResolver;
 import com.proyecto.servicios.service.AuthService;
@@ -70,6 +72,28 @@ public class AuthController {
             @Valid @RequestBody TotpVerificationRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(authService.verificarTotp(request, extraerMetadata(httpRequest)));
+    }
+
+    @PostMapping(value = "/totp/recuperar", produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(
+            summary = "Recuperar acceso 2FA con código de respaldo",
+            description = "Valida correo, contraseña y un código de recuperación de un solo uso para cerrar sesiones previas e iniciar un nuevo enrolamiento TOTP"
+    )
+    public ResponseEntity<AuthResponse> recuperarAccesoTotp(
+            @Valid @RequestBody TotpRecoveryRequest request,
+            HttpServletRequest httpRequest) {
+        return ResponseEntity.ok(authService.recuperarAccesoTotp(request, extraerMetadata(httpRequest)));
+    }
+
+    @GetMapping(value = "/sesion-activa", produces = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("isAuthenticated()")
+    @SecurityRequirement(name = "BearerAuth")
+    @Operation(
+            summary = "Consultar sesión activa vigente",
+            description = "Retorna los metadatos de la sesión activa única registrada en servidor para el usuario autenticado"
+    )
+    public ResponseEntity<SesionActivaResponse> consultarSesionActiva() {
+        return ResponseEntity.ok(authService.consultarSesionActiva());
     }
 
     @PostMapping(value = "/refresh", produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)

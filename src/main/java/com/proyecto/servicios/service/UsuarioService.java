@@ -16,4 +16,6 @@ public interface UsuarioService {
     UsuarioResponse actualizar(UsuarioActualizacionRequest request);
 
     UsuarioResponse cambiarEstado(UsuarioEstadoRequest request);
+
+    UsuarioResponse resetearTotp(Long usuarioId);
 }

@@ -14,6 +14,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.MfaRecoveryCodeRepository;
 import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -54,6 +55,7 @@ class UsuarioServiceImplTest {
     @Mock private UsuarioMapper usuarioMapper;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private RefreshTokenRepository refreshTokenRepository;
+    @Mock private MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
 
     @InjectMocks
     private UsuarioServiceImpl servicio;
@@ -384,6 +386,30 @@ class UsuarioServiceImplTest {
         assertThrows(ReglaNegocioException.class,
                 () -> servicio.cambiarEstado(estadoRequest(10L, false)));
         verify(usuarioRepository, never()).save(any(Usuario.class));
+    }
+
+    @Test
+    @DisplayName("resetearTotp limpia secreto 2FA, incrementa tokenVersion, revoca sesiones y elimina recovery codes")
+    void resetearTotp_exito_limpiaTotpYRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        existente.setTotpHabilitado(true);
+        existente.setTotpSecretEnc("ENC:secreto");
+        existente.setTotpUltimoPaso(50L);
+        existente.setTokenVersion(2L);
+
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioResponse resp = servicio.resetearTotp(10L);
+
+        assertEquals(0, resp.getCodigo());
+        assertFalse(existente.isTotpHabilitado());
+        assertNull(existente.getTotpSecretEnc());
+        assertNull(existente.getTotpUltimoPaso());
+        assertEquals(3L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+        verify(mfaRecoveryCodeRepository).deleteByUsuarioId(10L);
     }
 
     private UsuarioCreacionRequest creacionValida() {
