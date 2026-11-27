@@ -84,6 +84,7 @@ class ClienteServiceImplTest {
     @Mock private AuthenticatedUserService authenticatedUserService;
     @Mock private RefreshTokenRepository refreshTokenRepository;
     @Mock private TransaccionServicioRepository transaccionServicioRepository;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private ClienteServiceImpl servicio;
@@ -153,6 +154,8 @@ class ClienteServiceImplTest {
 
         verify(clienteRepository).save(any(Cliente.class));
         verify(domicilioClienteRepository).save(any(DomicilioCliente.class));
+        verify(emailNotificationService).enviarNotificacionOnboardingRecibido(
+                anyString(), anyString(), anyString(), org.mockito.ArgumentMatchers.eq(new BigDecimal("1000.00")));
     }
 
     @Test

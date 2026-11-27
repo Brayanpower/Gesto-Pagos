@@ -261,6 +261,38 @@ class PagoServicioControllerIntegrationTest {
                 .andExpect(jsonPath("$.codigo").value(400));
     }
 
+    @Test
+    @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+    @DisplayName("GET /servicios/historial filtra EXITOSA por defecto y permite incluirTodosEstatus=true")
+    void obtenerHistorial_filtraExitosaPorDefecto() throws Exception {
+        PageResponse<HistorialCompraResponse> page = PageResponse.<HistorialCompraResponse>builder()
+                .contenido(List.of())
+                .paginaActual(0)
+                .tamanoPagina(10)
+                .totalElementos(0)
+                .totalPaginas(0)
+                .primera(true)
+                .ultima(true)
+                .build();
+
+        when(pagoServicioService.obtenerHistorialCompras(
+                eq(null), eq(null), eq(null), eq(EstatusTransaccion.EXITOSA), any()))
+                .thenReturn(page);
+        when(pagoServicioService.obtenerHistorialCompras(
+                eq(null), eq(null), eq(null), eq(null), any()))
+                .thenReturn(page);
+
+        mockMvc.perform(get("/servicios/historial"))
+                .andExpect(status().isOk());
+        org.mockito.Mockito.verify(pagoServicioService)
+                .obtenerHistorialCompras(eq(null), eq(null), eq(null), eq(EstatusTransaccion.EXITOSA), any());
+
+        mockMvc.perform(get("/servicios/historial").param("incluirTodosEstatus", "true"))
+                .andExpect(status().isOk());
+        org.mockito.Mockito.verify(pagoServicioService)
+                .obtenerHistorialCompras(eq(null), eq(null), eq(null), eq(null), any());
+    }
+
     private static SendTxRequest requestValido() {
         return SendTxRequest.builder()
                 .numeroCuenta("1234567890")

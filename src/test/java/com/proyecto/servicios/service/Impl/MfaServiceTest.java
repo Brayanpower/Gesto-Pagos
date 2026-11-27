@@ -3,6 +3,7 @@ package com.proyecto.servicios.service.Impl;
 import com.proyecto.servicios.entity.seguridad.MfaChallenge;
 import com.proyecto.servicios.entity.seguridad.TipoDesafioMfa;
 import com.proyecto.servicios.entity.seguridad.Usuario;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.repositorys.seguridad.MfaChallengeRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
@@ -226,6 +227,66 @@ class MfaServiceTest {
         verify(totpService, never()).generarSecretoBase32();
         verify(encryptionHelper, times(2)).decryptToString("cipher-b64");
         verify(usuarioRepository, times(1)).save(usuario);
+    }
+
+    @Test
+    @DisplayName("generarYGuardarOtpCorreo guarda hash de OTP, respeta cooldown y permite validar login sin activar TOTP en ENROLLMENT")
+    void emailOtp_generarYValidarEnLogin_yCooldown() throws Exception {
+        String rawToken = "challenge-email-otp";
+        Usuario usuario = crearUsuario(10L, false, "ENC:cipher-b64");
+        MfaChallenge challenge = crearChallenge(usuario, sha256Hex(rawToken), TipoDesafioMfa.ENROLLMENT, 0, false,
+                LocalDateTime.now(ZoneId.systemDefault()).plusMinutes(5));
+
+        when(mfaChallengeRepository.findWithUsuarioByChallengeHash(sha256Hex(rawToken)))
+                .thenReturn(Optional.of(challenge));
+        when(mfaChallengeRepository.save(any(MfaChallenge.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MfaService.EmailOtpIssueResult issue = mfaService.generarYGuardarOtpCorreo(rawToken);
+        assertEquals(6, issue.codigoOtp().length());
+        assertNotNull(challenge.getEmailOtpHash());
+        assertNotEquals(issue.codigoOtp(), challenge.getEmailOtpHash());
+        assertNotNull(challenge.getEmailOtpEnviadoEn());
+
+        // Cooldown activo impide reenvio inmediato
+        assertThrows(ReglaNegocioException.class, () -> mfaService.generarYGuardarOtpCorreo(rawToken));
+
+        // Verificacion con codigo OTP enviado por correo consume challenge y limpia hash sin marcar totpHabilitado
+        Usuario verificado = mfaService.validarDesafioYCodigo(rawToken, issue.codigoOtp());
+        assertEquals(usuario, verificado);
+        assertTrue(challenge.isConsumido());
+        assertNull(challenge.getEmailOtpHash());
+        assertFalse(usuario.isTotpHabilitado());
+    }
+
+    @Test
+    @DisplayName("Desafio EMAIL_RECOVERY es rechazado en login normal y validado correctamente en recuperar por correo")
+    void emailRecovery_aisladoDelLoginNormal() throws Exception {
+        Usuario usuario = crearUsuario(15L, true, "ENC:cipher-b64");
+        when(mfaChallengeRepository.save(any(MfaChallenge.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        MfaService.EmailRecoveryInitResult init = mfaService.iniciarDesafioRecuperacionCorreo(
+                usuario, ClientMetadata.of("198.51.100.1", "Test"));
+
+        assertEquals(6, init.codigoOtp().length());
+        verify(mfaChallengeRepository).invalidarActivosPorUsuarioId(15L);
+
+        ArgumentCaptor<MfaChallenge> captor = ArgumentCaptor.forClass(MfaChallenge.class);
+        verify(mfaChallengeRepository).save(captor.capture());
+        MfaChallenge guardado = captor.getValue();
+        assertEquals(TipoDesafioMfa.EMAIL_RECOVERY, guardado.getTipo());
+
+        when(mfaChallengeRepository.findWithUsuarioByChallengeHash(sha256Hex(init.challengeToken())))
+                .thenReturn(Optional.of(guardado));
+
+        // Token de recuperacion NUNCA debe servir para iniciar sesion en /totp/verificar
+        assertThrows(BadCredentialsException.class,
+                () -> mfaService.validarDesafioYCodigo(init.challengeToken(), init.codigoOtp()));
+
+        // Validacion en flujo de recuperacion por correo tiene exito y consume el desafio
+        Usuario recuperado = mfaService.validarDesafioRecuperacionCorreo(init.challengeToken(), init.codigoOtp());
+        assertEquals(usuario, recuperado);
+        assertTrue(guardado.isConsumido());
+        assertNull(guardado.getEmailOtpHash());
     }
 
     private Usuario crearUsuario(Long id, boolean totpHabilitado, String totpSecretEnc) {

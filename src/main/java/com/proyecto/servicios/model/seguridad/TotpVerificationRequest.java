@@ -19,5 +19,12 @@ public class TotpVerificationRequest {
     @NotBlank(message = "El codigo OTP es obligatorio")
     @Pattern(regexp = "^\\d{6}$", message = "El codigo OTP debe contener exactamente 6 digitos")
     private String codigo;
+
+    private Boolean forzarCierreSesionAnterior;
+
+    public TotpVerificationRequest(String challengeToken, String codigo) {
+        this.challengeToken = challengeToken;
+        this.codigo = codigo;
+    }
 }
 

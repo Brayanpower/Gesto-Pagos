@@ -1,5 +1,6 @@
 package com.proyecto.servicios.exception;
 
+import com.proyecto.servicios.model.ErrorDetailResponse;
 import com.proyecto.servicios.model.GenericResponse;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -7,6 +8,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
+
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -49,5 +52,14 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<GenericResponse> internal = handler.handleGlobalException(new RuntimeException("Fallo inesperado"));
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, internal.getStatusCode());
         assertEquals(500, internal.getBody().getCodigo());
+
+        ResponseEntity<ErrorDetailResponse> sesion = handler.handleSesionActivaExistente(
+                new SesionActivaExistenteException(
+                        "Ya existe sesion activa", "10.0.0.2", "FlutterApp/1.0",
+                        LocalDateTime.of(2026, 11, 26, 10, 0)));
+        assertEquals(HttpStatus.CONFLICT, sesion.getStatusCode());
+        assertEquals(409, sesion.getBody().getCodigo());
+        assertEquals("SESION_ACTIVA_EXISTENTE", sesion.getBody().getErrores().get("codigoError"));
+        assertEquals("FlutterApp/1.0", sesion.getBody().getErrores().get("dispositivo"));
     }
 }

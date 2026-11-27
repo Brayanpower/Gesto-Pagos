@@ -7,6 +7,7 @@ import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.UsuarioNotFoundException;
 import com.proyecto.servicios.mapper.UsuarioMapper;
+import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.UsuarioActualizacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaResponse;
@@ -14,6 +15,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.MfaRecoveryCodeRepository;
 import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
@@ -28,6 +30,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -40,18 +44,24 @@ public class UsuarioServiceImpl implements UsuarioService {
     private final UsuarioMapper usuarioMapper;
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
+    private final EmailNotificationService emailNotificationService;
 
     public UsuarioServiceImpl(
             UsuarioRepository usuarioRepository,
             ClienteRepository clienteRepository,
             UsuarioMapper usuarioMapper,
             PasswordEncoder passwordEncoder,
-            RefreshTokenRepository refreshTokenRepository) {
+            RefreshTokenRepository refreshTokenRepository,
+            MfaRecoveryCodeRepository mfaRecoveryCodeRepository,
+            EmailNotificationService emailNotificationService) {
         this.usuarioRepository = usuarioRepository;
         this.clienteRepository = clienteRepository;
         this.usuarioMapper = usuarioMapper;
         this.passwordEncoder = passwordEncoder;
         this.refreshTokenRepository = refreshTokenRepository;
+        this.mfaRecoveryCodeRepository = mfaRecoveryCodeRepository;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -236,6 +246,40 @@ public class UsuarioServiceImpl implements UsuarioService {
         log.info("Usuario con ID {} {}", guardado.getId(), guardado.isActivo() ? "activado" : "desactivado");
 
         return construirResponse(guardado, mensaje);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public UsuarioResponse resetearTotp(Long usuarioId) {
+        Usuario usuario = usuarioRepository.findById(usuarioId)
+                .orElseThrow(() -> new UsuarioNotFoundException(usuarioId));
+
+        usuario.setTotpHabilitado(false);
+        usuario.setTotpSecretEnc(null);
+        usuario.setTotpConfiguradoEn(null);
+        usuario.setTotpUltimoPaso(null);
+        usuario.incrementarTokenVersion();
+
+        Usuario guardado = usuarioRepository.save(usuario);
+        refreshTokenRepository.revocarTodosPorUsuarioId(usuarioId);
+        mfaRecoveryCodeRepository.deleteByUsuarioId(usuarioId);
+        log.info("TOTP restablecido por administrador para usuario ID {}", usuarioId);
+        if (emailNotificationService != null) {
+            String nombre = guardado.getCliente() != null && guardado.getCliente().getNombre() != null
+                    ? guardado.getCliente().getNombre()
+                    : guardado.getCorreo();
+            emailNotificationService.enviarAlertaSeguridad(
+                    guardado.getCorreo(),
+                    nombre,
+                    "Restablecimiento de 2FA por administrador",
+                    "Un administrador restablecio tu autenticacion 2FA y cerro tus sesiones activas.",
+                    ClientMetadata.desconocido(),
+                    LocalDateTime.now(ZoneId.systemDefault()));
+        }
+
+        return construirResponse(
+                guardado,
+                "TOTP restablecido; el usuario debera reconfigurar Google Authenticator en su proximo inicio de sesion");
     }
 
     private UsuarioResponse construirResponse(Usuario usuario, String mensaje) {

@@ -1,6 +1,10 @@
 package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
+import com.proyecto.servicios.exception.CatalogoNotFoundException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
+import com.proyecto.servicios.model.PageResponse;
+import com.proyecto.servicios.model.gestopago.CatalogoCategoriaResponse;
 import com.proyecto.servicios.model.gestopago.catproduct.GestoPagoCatProductResponse;
 import com.proyecto.servicios.model.gestopago.catproduct.Producto;
 import com.proyecto.servicios.model.gestopago.catproduct.Productos;
@@ -117,6 +121,53 @@ class CatalogoServiceImplTest {
 
         assertThrows(com.proyecto.servicios.exception.ReglaNegocioException.class,
                 () -> servicio.validarYObtenerProducto(9999, 14302));
+    }
+
+    @Test
+    @DisplayName("buscarCatalogo, buscarCatalogoPaginado, obtenerCategorias y obtenerDetalleProducto funcionan correctamente")
+    void consultasAvanzadasCatalogo_filtrosCategoriasDetalle() {
+        CatalogoProducto telcel = doc("2284", "14302", "TELCEL", "Recarga 100", "1", "100.0");
+        CatalogoProducto cfe = doc("79", "101", "CFE", "Recibo Luz", "2", "0.0");
+        CatalogoProducto att = doc("2285", "14400", "ATT", "Recarga 50", "1", "50.0");
+        when(catalogoProductoRepository.findAll()).thenReturn(List.of(telcel, cfe, att));
+
+        List<CatalogoProducto> cat1 = servicio.buscarCatalogo("1", null, "recarga");
+        assertEquals(2, cat1.size());
+        assertEquals("ATT", cat1.get(0).getServicio());
+        assertEquals("TELCEL", cat1.get(1).getServicio());
+
+        PageResponse<CatalogoProducto> pagina = servicio.buscarCatalogoPaginado("1", null, null, 0, 1);
+        assertEquals(1, pagina.getContenido().size());
+        assertEquals(2, pagina.getTotalElementos());
+        assertEquals(2, pagina.getTotalPaginas());
+        assertThrows(ReglaNegocioException.class, () -> servicio.buscarCatalogoPaginado(null, null, null, -1, 10));
+
+        List<CatalogoCategoriaResponse> categorias = servicio.obtenerCategorias();
+        assertEquals(2, categorias.size());
+        assertEquals("1", categorias.get(0).getIdCatTipoServicio());
+        assertEquals(2L, categorias.get(0).getTotalProductos());
+        assertEquals(List.of("ATT", "TELCEL"), categorias.get(0).getServicios());
+
+        when(catalogoProductoRepository.findFirstByIdServicioAndIdProducto("79", "101"))
+                .thenReturn(java.util.Optional.of(cfe));
+        when(catalogoProductoRepository.findFirstByIdServicioAndIdProducto("79", "999"))
+                .thenReturn(java.util.Optional.empty());
+        assertEquals("CFE", servicio.obtenerDetalleProducto("79", "101").getServicio());
+        assertThrows(CatalogoNotFoundException.class, () -> servicio.obtenerDetalleProducto("79", "999"));
+        assertThrows(ReglaNegocioException.class, () -> servicio.obtenerDetalleProducto("abc", "101"));
+    }
+
+    private static CatalogoProducto doc(
+            String idServicio, String idProducto, String servicio, String nombre, String categoria, String precio) {
+        CatalogoProducto doc = new CatalogoProducto();
+        doc.setId(idServicio + ":" + idProducto);
+        doc.setIdServicio(idServicio);
+        doc.setIdProducto(idProducto);
+        doc.setServicio(servicio);
+        doc.setNombreProducto(nombre);
+        doc.setIdCatTipoServicio(categoria);
+        doc.setPrecio(precio);
+        return doc;
     }
 
     private static GestoPagoCatProductResponse respuestaConDosProductos() {
