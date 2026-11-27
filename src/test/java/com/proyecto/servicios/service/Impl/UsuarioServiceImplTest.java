@@ -7,6 +7,7 @@ import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.UsuarioNotFoundException;
 import com.proyecto.servicios.mapper.UsuarioMapper;
+import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.UsuarioActualizacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaResponse;
@@ -14,6 +15,7 @@ import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioEstadoRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioResponse;
 import com.proyecto.servicios.repositorys.clientes.ClienteRepository;
+import com.proyecto.servicios.repositorys.seguridad.MfaRecoveryCodeRepository;
 import com.proyecto.servicios.repositorys.seguridad.RefreshTokenRepository;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import org.junit.jupiter.api.AfterEach;
@@ -30,6 +32,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -54,6 +57,8 @@ class UsuarioServiceImplTest {
     @Mock private UsuarioMapper usuarioMapper;
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private RefreshTokenRepository refreshTokenRepository;
+    @Mock private MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private UsuarioServiceImpl servicio;
@@ -384,6 +389,37 @@ class UsuarioServiceImplTest {
         assertThrows(ReglaNegocioException.class,
                 () -> servicio.cambiarEstado(estadoRequest(10L, false)));
         verify(usuarioRepository, never()).save(any(Usuario.class));
+    }
+
+    @Test
+    @DisplayName("resetearTotp limpia secreto 2FA, incrementa tokenVersion, revoca sesiones y elimina recovery codes")
+    void resetearTotp_exito_limpiaTotpYRevocaSesiones() {
+        Usuario existente = usuarioConId(10L);
+        existente.setTotpHabilitado(true);
+        existente.setTotpSecretEnc("ENC:secreto");
+        existente.setTotpUltimoPaso(50L);
+        existente.setTokenVersion(2L);
+
+        when(usuarioRepository.findById(10L)).thenReturn(Optional.of(existente));
+        when(usuarioRepository.save(any(Usuario.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(usuarioMapper.toResponse(any(Usuario.class))).thenReturn(new UsuarioResponse());
+
+        UsuarioResponse resp = servicio.resetearTotp(10L);
+
+        assertEquals(0, resp.getCodigo());
+        assertFalse(existente.isTotpHabilitado());
+        assertNull(existente.getTotpSecretEnc());
+        assertNull(existente.getTotpUltimoPaso());
+        assertEquals(3L, existente.getTokenVersion());
+        verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
+        verify(mfaRecoveryCodeRepository).deleteByUsuarioId(10L);
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                org.mockito.ArgumentMatchers.eq("cliente@banco.com"),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(ClientMetadata.class),
+                any(LocalDateTime.class));
     }
 
     private UsuarioCreacionRequest creacionValida() {

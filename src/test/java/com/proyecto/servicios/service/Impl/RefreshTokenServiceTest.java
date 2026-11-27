@@ -265,4 +265,20 @@ class RefreshTokenServiceTest {
         verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
         service.revocarTodasLasSesiones(null);
     }
+
+    @Test
+    @DisplayName("obtenerSesionActivaVigente retorna la sesion no revocada y vigente del usuario")
+    void obtenerSesionActivaVigente_retornaSesion() {
+        RefreshToken vigente = new RefreshToken();
+        vigente.setId(9L);
+        vigente.setUsuario(usuario);
+        when(refreshTokenRepository.findFirstByUsuarioIdAndRevocadoFalseAndExpiraEnAfterOrderByFechaCreacionDesc(
+                eq(10L), any(LocalDateTime.class)))
+                .thenReturn(Optional.of(vigente));
+
+        assertTrue(service.obtenerSesionActivaVigente(null).isEmpty());
+        Optional<RefreshToken> encontrada = service.obtenerSesionActivaVigente(10L);
+        assertTrue(encontrada.isPresent());
+        assertEquals(9L, encontrada.get().getId());
+    }
 }

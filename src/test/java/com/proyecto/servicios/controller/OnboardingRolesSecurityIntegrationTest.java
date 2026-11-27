@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.proyecto.servicios.entity.cuentas.EstatusCuenta;
 import com.proyecto.servicios.entity.cuentas.TipoCuenta;
 import com.proyecto.servicios.exception.GlobalExceptionHandler;
+import com.proyecto.servicios.exception.RateLimitExceededException;
 import com.proyecto.servicios.model.banco.CuentaActualizacionRequest;
 import com.proyecto.servicios.model.banco.CuentaResponse;
 import com.proyecto.servicios.model.seguridad.UsuarioCreacionRequest;
@@ -12,6 +13,7 @@ import com.proyecto.servicios.security.JwtAccessDeniedHandler;
 import com.proyecto.servicios.security.JwtAuthenticationEntryPoint;
 import com.proyecto.servicios.security.JwtAuthenticationFilter;
 import com.proyecto.servicios.security.JwtService;
+import com.proyecto.servicios.security.PublicEndpointRateLimiter;
 import com.proyecto.servicios.security.SecurityConfig;
 import com.proyecto.servicios.service.ClienteService;
 import com.proyecto.servicios.service.CuentaService;
@@ -31,11 +33,14 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -56,6 +61,7 @@ class OnboardingRolesSecurityIntegrationTest {
     @MockBean private ClienteService clienteService;
     @MockBean private CuentaService cuentaService;
     @MockBean private UsuarioService usuarioService;
+    @MockBean private PublicEndpointRateLimiter publicEndpointRateLimiter;
     @MockBean private JwtService jwtService;
     @MockBean private UserDetailsService userDetailsService;
 
@@ -147,6 +153,74 @@ class OnboardingRolesSecurityIntegrationTest {
                         .content(objectMapper.writeValueAsString(req)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.rol").value("ROLE_ADMIN"));
+    }
+
+    @Test
+    @DisplayName("POST /clientes retorna 429 Too Many Requests con Retry-After cuando excede rate limit de onboarding")
+    void registrarCliente_rateLimitExcedido_retorna429() throws Exception {
+        doThrow(new RateLimitExceededException("Demasiadas solicitudes de registro", 120L))
+                .when(publicEndpointRateLimiter).verificarLimiteOnboarding(anyString());
+
+        String payload = """
+                {
+                  "nombre": "Juan",
+                  "apellidoPaterno": "Garcia",
+                  "apellidoMaterno": "Lopez",
+                  "fechaNacimiento": "1995-05-10",
+                  "curp": "GALJ950510HDFRRL09",
+                  "rfc": "GALJ950510AB1",
+                  "generoId": 1,
+                  "nacionalidadId": 1,
+                  "estadoCivilId": 1,
+                  "correo": "juan.garcia@banco.com",
+                  "telefonoMovil": "5512345678",
+                  "ocupacion": "Ingeniero",
+                  "empresa": "Tech SA",
+                  "ingresoMensual": 25000.00,
+                  "domicilio": {
+                    "calle": "Reforma",
+                    "noExterior": "100",
+                    "cp": "06600",
+                    "coloniaId": 1,
+                    "municipioId": 1,
+                    "estadoId": 1,
+                    "paisId": 1
+                  },
+                  "saldoInicial": 100.00,
+                  "password": "Password1@"
+                }
+                """;
+
+        mockMvc.perform(post("/clientes")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(payload))
+                .andExpect(status().isTooManyRequests())
+                .andExpect(header().string("Retry-After", "120"))
+                .andExpect(jsonPath("$.codigo").value(429));
+    }
+
+    @Test
+    @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+    @DisplayName("ROLE_CLIENTE recibe 403 al intentar POST /usuarios/{id}/reset-totp")
+    void resetTotp_clienteBloqueado_retorna403() throws Exception {
+        mockMvc.perform(post("/usuarios/10/reset-totp"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "admin@banco.com", roles = "ADMIN")
+    @DisplayName("ROLE_ADMIN puede ejecutar POST /usuarios/{id}/reset-totp")
+    void resetTotp_adminPermitido_retorna200() throws Exception {
+        UsuarioResponse resp = new UsuarioResponse();
+        resp.setCodigo(0);
+        resp.setId(10L);
+        resp.setMensaje("TOTP restablecido");
+        when(usuarioService.resetearTotp(10L)).thenReturn(resp);
+
+        mockMvc.perform(post("/usuarios/10/reset-totp"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.codigo").value(0))
+                .andExpect(jsonPath("$.id").value(10));
     }
 }
 

@@ -3,7 +3,7 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.0'
     id 'org.springframework.boot' version '3.3.6'//Versión de componentes de spring boot
     id 'org.sonarqube' version '5.1.0.4882'
-    id "org.owasp.dependencycheck" version "8.1.2"
+    id "org.owasp.dependencycheck" version "10.0.4"
     id 'com.github.ben-manes.versions' version '0.46.0'
     id 'java'
 }
@@ -33,7 +33,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
     //Documentation y APIs
 
-    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.2.0' //RevisarCompatibilidad
+    implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.6.0'
     //Bases de datos
     implementation 'org.postgresql:postgresql:42.7.3'
     implementation 'org.flywaydb:flyway-core'
@@ -50,6 +50,7 @@ dependencies {
     implementation 'org.apache.httpcomponents.client5:httpclient5:5.4.1'
     implementation 'org.mapstruct:mapstruct:1.6.3'
     //Mail-XML
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
     implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.3'
     implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.0'
     //Lombok

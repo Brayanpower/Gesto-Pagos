@@ -41,6 +41,7 @@ class CuentaServiceImplTest {
     @Mock private CuentaMapper cuentaMapper;
     @Mock private AuthenticatedUserService authenticatedUserService;
     @Mock private TransaccionServicioRepository transaccionServicioRepository;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private CuentaServiceImpl servicio;
@@ -56,7 +57,11 @@ class CuentaServiceImplTest {
         cuenta.setNumeroCuenta("1234567890");
         cuenta.setTipoCuenta(TipoCuenta.AHORRO);
         cuenta.setEstatus(EstatusCuenta.PENDIENTE_REVISION);
-        cuenta.setCliente(clienteActivo(1L));
+        Cliente titular = clienteActivo(1L);
+        titular.setNombre("Ana");
+        titular.setApellidoPaterno("Lopez");
+        titular.setCorreo("ana@banco.com");
+        cuenta.setCliente(titular);
 
         when(cuentaRepository.findWithClienteByNumeroCuenta("1234567890")).thenReturn(Optional.of(cuenta));
         when(cuentaRepository.save(cuenta)).thenReturn(cuenta);
@@ -70,6 +75,8 @@ class CuentaServiceImplTest {
         assertEquals("Documentacion validada", cuenta.getObservacionRevision());
         assertNotNull(cuenta.getFechaRevision());
         verify(cuentaRepository).save(cuenta);
+        verify(emailNotificationService).enviarNotificacionDictamenCuenta(
+                "ana@banco.com", "Ana Lopez", "1234567890", EstatusCuenta.ACTIVA, "Documentacion validada");
     }
 
     @Test

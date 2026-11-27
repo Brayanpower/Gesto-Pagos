@@ -3,12 +3,18 @@ package com.proyecto.servicios.controller;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.GlobalExceptionHandler;
+import com.proyecto.servicios.exception.SesionActivaExistenteException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.security.CustomUserDetails;
 import com.proyecto.servicios.security.JwtAccessDeniedHandler;
@@ -31,6 +37,7 @@ import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.DisabledException;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDateTime;
@@ -66,6 +73,9 @@ class AuthSecurityIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private AuthController authController;
+
     @MockBean
     private AuthService authService;
 
@@ -76,7 +86,7 @@ class AuthSecurityIntegrationTest {
     private UserDetailsService userDetailsService;
 
     @Test
-    @DisplayName("POST /auth/login publico retorna challenge TOTP sin JWT y extrae primer IP de X-Forwarded-For y User-Agent")
+    @DisplayName("POST /auth/login publico retorna challenge TOTP sin JWT, ignora X-Forwarded-For por defecto y lo respeta si trustForwardedHeaders=true")
     void login_publico_retornaChallengeYExtraeMetadata() throws Exception {
         AuthResponse challengeResp = new AuthResponse();
         challengeResp.setCodigo(0);
@@ -107,8 +117,24 @@ class AuthSecurityIntegrationTest {
 
         ArgumentCaptor<ClientMetadata> metadataCaptor = ArgumentCaptor.forClass(ClientMetadata.class);
         verify(authService).login(any(LoginRequest.class), metadataCaptor.capture());
-        assertEquals("198.51.100.25", metadataCaptor.getValue().ipOrigen());
+        assertEquals("127.0.0.1", metadataCaptor.getValue().ipOrigen());
         assertEquals("BancaMovil/2.0", metadataCaptor.getValue().userAgent());
+
+        ReflectionTestUtils.setField(authController, "trustForwardedHeaders", true);
+        try {
+            mockMvc.perform(post("/auth/login")
+                            .header("X-Forwarded-For", "198.51.100.25, 10.0.0.1")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new LoginRequest("cliente@banco.com", "Banco123@"))))
+                    .andExpect(status().isOk());
+
+            ArgumentCaptor<ClientMetadata> trustedCaptor = ArgumentCaptor.forClass(ClientMetadata.class);
+            verify(authService, org.mockito.Mockito.times(2))
+                    .login(any(LoginRequest.class), trustedCaptor.capture());
+            assertEquals("198.51.100.25", trustedCaptor.getValue().ipOrigen());
+        } finally {
+            ReflectionTestUtils.setField(authController, "trustForwardedHeaders", false);
+        }
     }
 
     @Test
@@ -315,6 +341,136 @@ class AuthSecurityIntegrationTest {
                 .andExpect(jsonPath("$.codigo").value(400));
 
         verifyNoInteractions(authService);
+    }
+
+    @Test
+    @DisplayName("POST /auth/login retorna 409 Conflict con SESION_ACTIVA_EXISTENTE cuando hay sesion activa previa")
+    void login_sesionActivaExistente_retorna409() throws Exception {
+        when(authService.login(any(LoginRequest.class), any(ClientMetadata.class)))
+                .thenThrow(new SesionActivaExistenteException(
+                        "Ya existe una sesion activa en otro dispositivo.",
+                        "198.51.100.8",
+                        "FlutterApp/1.0",
+                        LocalDateTime.of(2026, 11, 26, 12, 0)));
+
+        mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new LoginRequest("cliente@banco.com", "Banco123@"))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.codigo").value(409))
+                .andExpect(jsonPath("$.errores.codigoError").value("SESION_ACTIVA_EXISTENTE"))
+                .andExpect(jsonPath("$.errores.sesionActivaExistente").value("true"))
+                .andExpect(jsonPath("$.errores.dispositivo").value("FlutterApp/1.0"));
+    }
+
+    @Test
+    @DisplayName("POST /auth/totp/recuperar es publico, retorna nuevo enrollment y rechaza formato invalido (400)")
+    void recuperarAccesoTotp_publico_retorna200O400() throws Exception {
+        AuthResponse enrollment = new AuthResponse();
+        enrollment.setCodigo(0);
+        enrollment.setMensaje("Configuracion de Google Authenticator requerida");
+        enrollment.setRequiereTotp(true);
+        enrollment.setTotpConfiguracionRequerida(true);
+        enrollment.setChallengeToken("chal-rec-1");
+        enrollment.setTotpSecret("NEWBASE32SECRET");
+        when(authService.recuperarAccesoTotp(any(TotpRecoveryRequest.class), any(ClientMetadata.class)))
+                .thenReturn(enrollment);
+
+        mockMvc.perform(post("/auth/totp/recuperar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new TotpRecoveryRequest("cliente@banco.com", "Banco123@", "ABCD-2345"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.requiereTotp").value(true))
+                .andExpect(jsonPath("$.totpConfiguracionRequerida").value(true))
+                .andExpect(jsonPath("$.challengeToken").value("chal-rec-1"));
+
+        mockMvc.perform(post("/auth/totp/recuperar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new TotpRecoveryRequest("cliente@banco.com", "Banco123@", "malo"))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.codigo").value(400));
+    }
+
+    @Test
+    @DisplayName("GET /auth/sesion-activa requiere autenticacion (401) y retorna sesion vigente si autenticado")
+    void consultarSesionActiva_seguridadYRespuesta() throws Exception {
+        mockMvc.perform(get("/auth/sesion-activa"))
+                .andExpect(status().isUnauthorized());
+
+        when(authService.consultarSesionActiva()).thenReturn(SesionActivaResponse.builder()
+                .activa(true)
+                .correo("cliente@banco.com")
+                .ipOrigen("198.51.100.8")
+                .userAgent("WebApp/1.0")
+                .tokenVersion(2L)
+                .build());
+
+        Usuario usuario = crearUsuario("cliente@banco.com", "ROLE_CLIENTE");
+        CustomUserDetails userDetails = new CustomUserDetails(usuario);
+        when(jwtService.extractUsername("jwt-valido")).thenReturn("cliente@banco.com");
+        when(userDetailsService.loadUserByUsername("cliente@banco.com")).thenReturn(userDetails);
+        when(jwtService.isTokenValid("jwt-valido", userDetails)).thenReturn(true);
+
+        mockMvc.perform(get("/auth/sesion-activa")
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer jwt-valido"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.activa").value(true))
+                .andExpect(jsonPath("$.correo").value("cliente@banco.com"))
+                .andExpect(jsonPath("$.userAgent").value("WebApp/1.0"));
+    }
+
+    @Test
+    @DisplayName("Endpoints publicos de OTP por correo y recuperacion 2FA por correo validan DTO y retornan 200")
+    void otpCorreoYRecuperacionCorreo_publicos_validanYRetornan200() throws Exception {
+        mockMvc.perform(post("/auth/otp/correo/enviar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailOtpSendRequest("chal-123"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.codigo").value(0));
+
+        verify(authService).enviarOtpCorreo(any(EmailOtpSendRequest.class), any(ClientMetadata.class));
+
+        mockMvc.perform(post("/auth/otp/correo/enviar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailOtpSendRequest(" "))))
+                .andExpect(status().isBadRequest());
+
+        AuthResponse recoveryInit = new AuthResponse();
+        recoveryInit.setCodigo(0);
+        recoveryInit.setRequiereTotp(true);
+        recoveryInit.setOtpCorreoEnviado(true);
+        recoveryInit.setChallengeToken("chal-mail-rec");
+        when(authService.solicitarRecuperacionCorreo(any(EmailRecoveryStartRequest.class), any(ClientMetadata.class)))
+                .thenReturn(recoveryInit);
+
+        mockMvc.perform(post("/auth/totp/recuperar/solicitar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryStartRequest("cliente@banco.com", "Banco123@"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.otpCorreoEnviado").value(true))
+                .andExpect(jsonPath("$.challengeToken").value("chal-mail-rec"));
+
+        AuthResponse enrollment = new AuthResponse();
+        enrollment.setCodigo(0);
+        enrollment.setRequiereTotp(true);
+        enrollment.setTotpConfiguracionRequerida(true);
+        enrollment.setChallengeToken("chal-enroll-next");
+        when(authService.confirmarRecuperacionCorreo(any(EmailRecoveryConfirmRequest.class), any(ClientMetadata.class)))
+                .thenReturn(enrollment);
+
+        mockMvc.perform(post("/auth/totp/recuperar/confirmar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryConfirmRequest("chal-mail-rec", "123456"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totpConfiguracionRequerida").value(true))
+                .andExpect(jsonPath("$.challengeToken").value("chal-enroll-next"));
+
+        mockMvc.perform(post("/auth/totp/recuperar/confirmar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryConfirmRequest("chal-mail-rec", "12"))))
+                .andExpect(status().isBadRequest());
     }
 
     private Usuario crearUsuario(String correo, String rol) {

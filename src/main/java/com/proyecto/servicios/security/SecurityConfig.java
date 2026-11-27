@@ -21,6 +21,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.header.writers.ReferrerPolicyHeaderWriter;
+import org.springframework.security.web.header.writers.StaticHeadersWriter;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -34,6 +35,10 @@ import java.util.List;
 public class SecurityConfig {
 
     private static final String DEFAULT_ALLOWED_ORIGINS = "http://localhost:3000,http://localhost:8080";
+    private static final String CSP_API_STRICT = "default-src 'none'; frame-ancestors 'none'";
+    private static final String CSP_SWAGGER_UI =
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'";
+    private static final long HSTS_MAX_AGE_SECONDS = 31_536_000L;
 
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final UserDetailsService userDetailsService;
@@ -42,6 +47,9 @@ public class SecurityConfig {
 
     @Value("${app.cors.allowed-origins:http://localhost:3000,http://localhost:8080}")
     private String allowedOrigins = DEFAULT_ALLOWED_ORIGINS;
+
+    @Value("${app.security.swagger-public:false}")
+    private boolean swaggerPublic = false;
 
     public SecurityConfig(
             JwtAuthenticationFilter jwtAuthenticationFilter,
@@ -67,31 +75,48 @@ public class SecurityConfig {
                                 .policy(ReferrerPolicyHeaderWriter.ReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN))
                         .contentTypeOptions(Customizer.withDefaults())
                         .cacheControl(Customizer.withDefaults())
+                        .contentSecurityPolicy(csp -> csp
+                                .policyDirectives(swaggerPublic ? CSP_SWAGGER_UI : CSP_API_STRICT))
+                        .httpStrictTransportSecurity(hsts -> hsts
+                                .includeSubDomains(true)
+                                .maxAgeInSeconds(HSTS_MAX_AGE_SECONDS))
+                        .addHeaderWriter(new StaticHeadersWriter(
+                                "Permissions-Policy", "geolocation=(), microphone=(), camera=()"))
                 )
                 .exceptionHandling(exceptions -> exceptions
                         .authenticationEntryPoint(jwtAuthenticationEntryPoint)
                         .accessDeniedHandler(jwtAccessDeniedHandler)
                 )
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(HttpMethod.POST,
-                                "/auth/login",
-                                "/auth/totp/verificar",
-                                "/auth/refresh",
-                                "/auth/logout")
-                        .permitAll()
-                        .requestMatchers("/auth/logout-all", "/auth/auditoria").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/clientes").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/catalogos/**").permitAll()
-                        .requestMatchers("/catalogos/**").hasRole("ADMIN")
-                        .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/info").permitAll()
-                        .requestMatchers(HttpMethod.GET,
-                                "/gestopago/catalogo",
-                                "/gestopago/servicios/*/logo",
-                                "/gestopago/servicios/*/referencia")
-                        .permitAll()
-                        .anyRequest().authenticated()
-                )
+                .authorizeHttpRequests(auth -> {
+                    auth.requestMatchers(HttpMethod.POST,
+                                    "/auth/login",
+                                    "/auth/totp/verificar",
+                                    "/auth/otp/correo/enviar",
+                                    "/auth/totp/recuperar",
+                                    "/auth/totp/recuperar/solicitar-correo",
+                                    "/auth/totp/recuperar/confirmar-correo",
+                                    "/auth/refresh",
+                                    "/auth/logout")
+                            .permitAll()
+                            .requestMatchers("/auth/logout-all", "/auth/auditoria", "/auth/sesion-activa").authenticated()
+                            .requestMatchers(HttpMethod.POST, "/clientes").permitAll()
+                            .requestMatchers(HttpMethod.GET, "/catalogos/**").permitAll()
+                            .requestMatchers("/catalogos/**").hasRole("ADMIN");
+                    if (swaggerPublic) {
+                        auth.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll();
+                    } else {
+                        auth.requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").hasRole("ADMIN");
+                    }
+                    auth.requestMatchers("/actuator/health", "/actuator/info").permitAll()
+                            .requestMatchers(HttpMethod.GET,
+                                    "/gestopago/catalogo",
+                                    "/gestopago/catalogo/categorias",
+                                    "/gestopago/catalogo/*/*",
+                                    "/gestopago/servicios/*/logo",
+                                    "/gestopago/servicios/*/referencia")
+                            .permitAll()
+                            .anyRequest().authenticated();
+                })
                 .authenticationProvider(authenticationProvider())
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 

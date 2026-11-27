@@ -42,3 +42,8 @@ bin/
 ### Mac OS ###
 .DS_Store
 src/main/resources/application.properties
+
+### Variables de entorno locales ###
+.env
+.env.*
+!.env.example

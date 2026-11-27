@@ -178,5 +178,31 @@ class GestoPagoImagenServiceImplTest {
 
         server.verify();
     }
+
+    @Test
+    @DisplayName("Rechaza imagenes que exceden 5 MB tanto por Content-Length como en lectura streaming")
+    void obtenerLogoServicio_excedeTamanoMaximo_retornaEmpty() {
+        when(tokenService.obtenerBearerTokenValido()).thenReturn("gp-jwt-123");
+
+        HttpHeaders headersConLengthExcedido = new HttpHeaders();
+        headersConLengthExcedido.setContentLength(5L * 1024L * 1024L + 1L);
+
+        server.expect(requestTo(BASE_URL + "/sistema/images/gestopago/servicios/601.png"))
+                .andRespond(withStatus(HttpStatus.OK)
+                        .headers(headersConLengthExcedido)
+                        .contentType(MediaType.IMAGE_PNG)
+                        .body(PNG_BYTES));
+
+        byte[] payloadExcedido = new byte[5 * 1024 * 1024 + 64];
+        server.expect(requestTo(BASE_URL + "/sistema/images/gestopago/servicios/602.png"))
+                .andRespond(withStatus(HttpStatus.OK)
+                        .contentType(MediaType.IMAGE_PNG)
+                        .body(payloadExcedido));
+
+        assertTrue(service.obtenerLogoServicio("601").isEmpty());
+        assertTrue(service.obtenerLogoServicio("602").isEmpty());
+
+        server.verify();
+    }
 }
 

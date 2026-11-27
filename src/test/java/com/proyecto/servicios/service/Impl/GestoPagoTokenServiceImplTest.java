@@ -33,7 +33,7 @@ import static org.mockito.Mockito.when;
 @DisplayName("Pruebas de GestoPagoTokenServiceImpl (Seguridad Bearer Token)")
 class GestoPagoTokenServiceImplTest {
 
-    private static final String TEST_KEY = "HPo7OLqB4Fkk4E2yGOtwqw8H5fHR9kNx67OR4g4UdlA=";
+    private static final String TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 
     @Mock private GestoPagoAuthClient authClient;
     @Mock private GestoPagoTokenRepository tokenRepository;

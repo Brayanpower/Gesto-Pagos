@@ -19,6 +19,7 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.HistorialCompraRes
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.PagoServicioResponse;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
+import com.proyecto.servicios.model.notificacion.ComprobantePagoEmailData;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
@@ -69,6 +70,7 @@ class PagoServicioServiceImplTest {
     @Mock private TransaccionServicioRepository transaccionRepository;
     @Mock private CuentaRepository cuentaRepository;
     @Mock private AuthenticatedUserService authenticatedUserService;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private PagoServicioServiceImpl servicio;
@@ -137,6 +139,47 @@ class PagoServicioServiceImplTest {
         assertEquals("AUT-777", resp.getNumAutorizacion());
         verify(gestoPagoSendTxService, times(1)).ejecutarTransaccion(any(SendTx.class));
         verify(persistenceService, never()).reversarCargo(anyLong(), any(), anyString(), anyString());
+    }
+
+    @Test
+    @DisplayName("Pago exitoso envia comprobante por correo cuando el cliente tiene correo configurado")
+    void procesarPagoServicio_exito_enviaComprobantePorCorreo() {
+        cliente.setCorreo("cliente@banco.com");
+        cliente.setNombre("Juan");
+        cliente.setApellidoPaterno("Garcia");
+        when(authenticatedUserService.obtenerUsuarioAutenticadoActivo()).thenReturn(usuarioCliente);
+        when(authenticatedUserService.esCliente(usuarioCliente)).thenReturn(true);
+        when(catalogoService.validarYObtenerProducto(2284, 14302)).thenReturn(productoRecargaFija("100.0"));
+
+        TransaccionServicio enProceso = transaccionMock(EstatusTransaccion.EN_PROCESO);
+        when(persistenceService.reservarYDebitarSaldo(any())).thenReturn(enProceso);
+
+        GestoPagoTxResult aprobado = GestoPagoTxResult.builder()
+                .estado(EstadoProveedor.APROBADA)
+                .codigo("01")
+                .mensaje("Operacion realizada con exito")
+                .idTx("TX-901")
+                .numAutorizacion("AUT-778")
+                .build();
+        when(gestoPagoSendTxService.ejecutarTransaccion(any(SendTx.class))).thenReturn(aprobado);
+
+        TransaccionServicio confirmada = transaccionMock(EstatusTransaccion.EXITOSA);
+        confirmada.setFolioProveedor("TX-901");
+        confirmada.setNumAutorizacion("AUT-778");
+        when(persistenceService.confirmarExito(1L, aprobado)).thenReturn(confirmada);
+
+        SendTxRequest req = SendTxRequest.builder()
+                .numeroCuenta("1234567890")
+                .idServicio(2284)
+                .idProducto(14302)
+                .montoPago(new BigDecimal("100.00"))
+                .telefono("5512345678")
+                .build();
+
+        servicio.procesarPagoServicio(req, null);
+
+        verify(emailNotificationService).enviarComprobantePagoServicio(
+                eq("cliente@banco.com"), eq("Juan Garcia"), any(ComprobantePagoEmailData.class));
     }
 
     @Test
