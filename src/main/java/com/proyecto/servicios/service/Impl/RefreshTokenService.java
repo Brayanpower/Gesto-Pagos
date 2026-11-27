@@ -118,6 +118,16 @@ public class RefreshTokenService {
         return tokenOpt.map(RefreshToken::getUsuario);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<RefreshToken> obtenerSesionActivaVigente(Long usuarioId) {
+        if (usuarioId == null) {
+            return Optional.empty();
+        }
+        LocalDateTime ahora = LocalDateTime.now(ZoneId.systemDefault());
+        return refreshTokenRepository.findFirstByUsuarioIdAndRevocadoFalseAndExpiraEnAfterOrderByFechaCreacionDesc(
+                usuarioId, ahora);
+    }
+
     @Transactional
     public void revocarTodasLasSesiones(Long usuarioId) {
         if (usuarioId == null) {

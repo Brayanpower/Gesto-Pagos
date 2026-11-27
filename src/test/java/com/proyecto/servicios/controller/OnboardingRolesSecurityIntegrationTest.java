@@ -198,5 +198,29 @@ class OnboardingRolesSecurityIntegrationTest {
                 .andExpect(header().string("Retry-After", "120"))
                 .andExpect(jsonPath("$.codigo").value(429));
     }
+
+    @Test
+    @WithMockUser(username = "cliente@banco.com", roles = "CLIENTE")
+    @DisplayName("ROLE_CLIENTE recibe 403 al intentar POST /usuarios/{id}/reset-totp")
+    void resetTotp_clienteBloqueado_retorna403() throws Exception {
+        mockMvc.perform(post("/usuarios/10/reset-totp"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    @WithMockUser(username = "admin@banco.com", roles = "ADMIN")
+    @DisplayName("ROLE_ADMIN puede ejecutar POST /usuarios/{id}/reset-totp")
+    void resetTotp_adminPermitido_retorna200() throws Exception {
+        UsuarioResponse resp = new UsuarioResponse();
+        resp.setCodigo(0);
+        resp.setId(10L);
+        resp.setMensaje("TOTP restablecido");
+        when(usuarioService.resetearTotp(10L)).thenReturn(resp);
+
+        mockMvc.perform(post("/usuarios/10/reset-totp"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.codigo").value(0))
+                .andExpect(jsonPath("$.id").value(10));
+    }
 }
 

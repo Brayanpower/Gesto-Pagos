@@ -1,14 +1,21 @@
 package com.proyecto.servicios.service.Impl;
 
 import com.proyecto.servicios.entity.clientes.Cliente;
+import com.proyecto.servicios.entity.seguridad.RefreshToken;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CuentaBloqueadaException;
+import com.proyecto.servicios.exception.SesionActivaExistenteException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
+import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
+import com.proyecto.servicios.model.seguridad.TotpRecoveryRequest;
 import com.proyecto.servicios.model.seguridad.TotpVerificationRequest;
 import com.proyecto.servicios.repositorys.seguridad.UsuarioRepository;
 import com.proyecto.servicios.security.CustomUserDetails;
@@ -67,6 +74,8 @@ class AuthServiceImplTest {
     @Mock private LoginAuditService loginAuditService;
     @Mock private LoginRateLimiter loginRateLimiter;
     @Mock private MfaService mfaService;
+    @Mock private MfaRecoveryService mfaRecoveryService;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private AuthServiceImpl servicio;
@@ -483,6 +492,259 @@ class AuthServiceImplTest {
 
         assertEquals(expected, result);
         verify(loginAuditService).consultarAuditoria(CORREO, pageable);
+    }
+
+    @Test
+    @DisplayName("Sesion unica: login con sesion activa y sin forzar lanza SesionActivaExistenteException sin emitir JWT")
+    void login_conSesionActivaSinForzar_lanzaSesionActivaExistente() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshToken sesionPrevia = new RefreshToken();
+        sesionPrevia.setIpOrigen("10.0.0.5");
+        sesionPrevia.setUserAgent("FlutterApp/1.0");
+        sesionPrevia.setFechaCreacion(LocalDateTime.now(ZoneId.systemDefault()).minusMinutes(10));
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(refreshTokenService.obtenerSesionActivaVigente(10L)).thenReturn(Optional.of(sesionPrevia));
+
+        SesionActivaExistenteException ex = assertThrows(
+                SesionActivaExistenteException.class,
+                () -> servicio.login(new LoginRequest(CORREO, PASSWORD), METADATA));
+
+        assertEquals("10.0.0.5", ex.getIpOrigenActiva());
+        assertEquals("FlutterApp/1.0", ex.getUserAgentActivo());
+        verify(jwtService, never()).generateToken(anyMap(), any());
+        verify(refreshTokenService, never()).revocarTodasLasSesiones(any());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_SESION_CONFLICTO),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("Sesion unica: login 1 paso con forzarCierreSesionAnterior=true revoca sesion previa, incrementa tokenVersion y emite JWT")
+    void login_conSesionActivaYForzarCierre_revocaAnteriorYEmiteTokens() {
+        Usuario usuario = usuarioActivo(true, true);
+        RefreshToken sesionPrevia = new RefreshToken();
+        sesionPrevia.setIpOrigen("10.0.0.5");
+        sesionPrevia.setUserAgent("FlutterApp/1.0");
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(refreshTokenService.obtenerSesionActivaVigente(10L)).thenReturn(Optional.of(sesionPrevia));
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-web-nuevo");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-web-nuevo");
+
+        LoginRequest req = new LoginRequest(CORREO, PASSWORD, "123456");
+        req.setForzarCierreSesionAnterior(true);
+
+        AuthResponse response = servicio.login(req, METADATA);
+
+        assertEquals("jwt-web-nuevo", response.getToken());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(mfaService).validarCodigoDirectoEnLogin(usuario, "123456");
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_SESION_FORZADA),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("verificarTotp tras enrolamiento inicial devuelve codigos de recuperacion y aplica control de sesion unica")
+    void verificarTotp_enrolamiento_devuelveCodigosRecuperacion() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-enroll")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioYCodigo("chal-enroll", "123456")).thenAnswer(inv -> {
+            usuario.setTotpHabilitado(true);
+            return usuario;
+        });
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-enrolled");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-enrolled");
+        when(mfaRecoveryService.generarCodigosRecuperacion(usuario)).thenReturn(List.of("ABCD-2345", "WXYZ-6789"));
+
+        AuthResponse response = servicio.verificarTotp(new TotpVerificationRequest("chal-enroll", "123456"), METADATA);
+
+        assertEquals("jwt-enrolled", response.getToken());
+        assertEquals(List.of("ABCD-2345", "WXYZ-6789"), response.getCodigosRecuperacion());
+        verify(mfaRecoveryService).generarCodigosRecuperacion(usuario);
+    }
+
+    @Test
+    @DisplayName("recuperarAccesoTotp valido resetea TOTP, revoca sesiones, incrementa tokenVersion e inicia nuevo enrollment")
+    void recuperarAccesoTotp_valido_reseteaTotpEIniciaEnrollment() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setTotpSecretEnc("ENC:viejo");
+        usuario.setTotpUltimoPaso(55L);
+
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaRecoveryService.consumirCodigoRecuperacion(usuario, "ABCD-2345")).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA)).thenReturn(
+                new MfaService.ChallengeInitResult("chal-recovery", true, "NEWSECRET", "otpauth://totp/nuevo"));
+
+        AuthResponse response = servicio.recuperarAccesoTotp(
+                new TotpRecoveryRequest(CORREO, PASSWORD, "ABCD-2345"), METADATA);
+
+        assertTrue(response.getRequiereTotp());
+        assertTrue(response.getTotpConfiguracionRequerida());
+        assertEquals("chal-recovery", response.getChallengeToken());
+        assertEquals("NEWSECRET", response.getTotpSecret());
+        assertFalse(usuario.isTotpHabilitado());
+        assertNull(usuario.getTotpSecretEnc());
+        assertNull(usuario.getTotpUltimoPaso());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_RECUPERACION_EXITO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("recuperarAccesoTotp con codigo invalido incrementa intentos fallidos, audita y bloquea al exceder")
+    void recuperarAccesoTotp_codigoInvalido_bloqueaAlExceder() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setIntentosFallidos(4);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaRecoveryService.consumirCodigoRecuperacion(usuario, "ZZZZ-9999")).thenReturn(false);
+
+        assertThrows(CuentaBloqueadaException.class, () -> servicio.recuperarAccesoTotp(
+                new TotpRecoveryRequest(CORREO, PASSWORD, "ZZZZ-9999"), METADATA));
+
+        assertEquals(5, usuario.getIntentosFallidos());
+        assertNotNull(usuario.getBloqueadoHasta());
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_TOTP_RECUPERACION_FALLIDA),
+                eq(false), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("consultarSesionActiva retorna metadatos cuando existe sesion vigente y activa=false si no")
+    void consultarSesionActiva_retornaEstado() {
+        Usuario usuario = usuarioActivo(true, true);
+        SecurityContextHolder.getContext().setAuthentication(
+                new UsernamePasswordAuthenticationToken(CORREO, "n/a", List.of()));
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+
+        RefreshToken sesion = new RefreshToken();
+        sesion.setIpOrigen("198.51.100.40");
+        sesion.setUserAgent("WebBrowser/1.0");
+        sesion.setFechaCreacion(LocalDateTime.now(ZoneId.systemDefault()).minusMinutes(5));
+        sesion.setExpiraEn(LocalDateTime.now(ZoneId.systemDefault()).plusDays(7));
+        when(refreshTokenService.obtenerSesionActivaVigente(10L))
+                .thenReturn(Optional.of(sesion))
+                .thenReturn(Optional.empty());
+
+        SesionActivaResponse activa = servicio.consultarSesionActiva();
+        assertTrue(activa.isActiva());
+        assertEquals("198.51.100.40", activa.getIpOrigen());
+        assertEquals("WebBrowser/1.0", activa.getUserAgent());
+
+        SesionActivaResponse inactiva = servicio.consultarSesionActiva();
+        assertFalse(inactiva.isActiva());
+    }
+
+    @Test
+    @DisplayName("Login con canalMfa=EMAIL envia codigo OTP al correo y marca otpCorreoEnviado=true")
+    void login_canalMfaEmail_enviaOtpPorCorreo() {
+        Usuario usuario = usuarioActivo(true, true);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("chal-email-1", false, null, null));
+        when(mfaService.generarYGuardarOtpCorreo("chal-email-1"))
+                .thenReturn(new MfaService.EmailOtpIssueResult(usuario, "654321", 5L));
+
+        LoginRequest req = new LoginRequest(CORREO, PASSWORD);
+        req.setCanalMfa("EMAIL");
+
+        AuthResponse response = servicio.login(req, METADATA);
+
+        assertTrue(response.getRequiereTotp());
+        assertTrue(response.getOtpCorreoDisponible());
+        assertTrue(response.getOtpCorreoEnviado());
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "654321", 5L, "Inicio de sesion");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_OTP_CORREO_ENVIADO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("enviarOtpCorreo genera y envia codigo OTP por correo y audita evento")
+    void enviarOtpCorreo_exito_enviaCorreoYAudita() {
+        Usuario usuario = usuarioActivo(true, true);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-99")).thenReturn(Optional.of(usuario));
+        when(mfaService.generarYGuardarOtpCorreo("chal-99"))
+                .thenReturn(new MfaService.EmailOtpIssueResult(usuario, "112233", 5L));
+
+        servicio.enviarOtpCorreo(new EmailOtpSendRequest("chal-99"), METADATA);
+
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "112233", 5L, "Verificacion de acceso 2FA");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_OTP_CORREO_ENVIADO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("solicitarRecuperacionCorreo y confirmarRecuperacionCorreo completan recuperacion 2FA por email")
+    void recuperacion2faPorCorreo_flujoCompleto() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setTotpSecretEnc("ENC:viejo");
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafioRecuperacionCorreo(usuario, METADATA))
+                .thenReturn(new MfaService.EmailRecoveryInitResult("chal-rec-mail", usuario, "778899", 5L));
+
+        AuthResponse inicio = servicio.solicitarRecuperacionCorreo(
+                new EmailRecoveryStartRequest(CORREO, PASSWORD), METADATA);
+
+        assertTrue(inicio.getRequiereTotp());
+        assertTrue(inicio.getOtpCorreoEnviado());
+        assertEquals("chal-rec-mail", inicio.getChallengeToken());
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "778899", 5L, "Recuperacion de acceso 2FA");
+
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-rec-mail")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioRecuperacionCorreo("chal-rec-mail", "778899")).thenReturn(usuario);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("chal-new-enroll", true, "NEWSECRET", "otpauth://totp/nuevo"));
+
+        AuthResponse confirmado = servicio.confirmarRecuperacionCorreo(
+                new EmailRecoveryConfirmRequest("chal-rec-mail", "778899"), METADATA);
+
+        assertTrue(confirmado.getTotpConfiguracionRequerida());
+        assertEquals("chal-new-enroll", confirmado.getChallengeToken());
+        assertFalse(usuario.isTotpHabilitado());
+        assertNull(usuario.getTotpSecretEnc());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(mfaRecoveryService).invalidarCodigos(10L);
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                eq(CORREO), eq("Juan Garcia"), anyString(), anyString(), eq(METADATA), any(LocalDateTime.class));
+    }
+
+    @Test
+    @DisplayName("verificarTotp en primer enrolamiento envia codigos de respaldo y alerta de seguridad por correo")
+    void verificarTotp_enrolamiento_enviaCorreosDeRespaldoYAlerta() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-mail-enroll")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioYCodigo("chal-mail-enroll", "123456")).thenAnswer(inv -> {
+            usuario.setTotpHabilitado(true);
+            return usuario;
+        });
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-enrolled");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-enrolled");
+        when(mfaRecoveryService.generarCodigosRecuperacion(usuario)).thenReturn(List.of("ABCD-2345"));
+
+        servicio.verificarTotp(new TotpVerificationRequest("chal-mail-enroll", "123456"), METADATA);
+
+        verify(emailNotificationService).enviarCodigosRecuperacion2fa(CORREO, "Juan Garcia", List.of("ABCD-2345"));
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                eq(CORREO), eq("Juan Garcia"), anyString(), anyString(), eq(METADATA), any(LocalDateTime.class));
     }
 
     private static Usuario usuarioActivo(boolean totpObligatorio, boolean totpHabilitado) {

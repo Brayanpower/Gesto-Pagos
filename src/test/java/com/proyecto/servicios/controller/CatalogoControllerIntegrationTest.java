@@ -4,6 +4,8 @@ import com.proyecto.servicios.entity.gestopago.CatalogoProducto;
 import com.proyecto.servicios.exception.GlobalExceptionHandler;
 import com.proyecto.servicios.exception.RateLimitExceededException;
 import com.proyecto.servicios.exception.ReglaNegocioException;
+import com.proyecto.servicios.model.PageResponse;
+import com.proyecto.servicios.model.gestopago.CatalogoCategoriaResponse;
 import com.proyecto.servicios.security.JwtAccessDeniedHandler;
 import com.proyecto.servicios.security.JwtAuthenticationEntryPoint;
 import com.proyecto.servicios.security.JwtAuthenticationFilter;
@@ -126,5 +128,51 @@ class CatalogoControllerIntegrationTest {
                 .andExpect(status().isTooManyRequests())
                 .andExpect(header().string(HttpHeaders.RETRY_AFTER, "30"))
                 .andExpect(jsonPath("$.codigo").value(429));
+    }
+
+    @Test
+    @DisplayName("GET /gestopago/catalogo con paginacion, /categorias y /{idServicio}/{idProducto} son publicos")
+    void catalogoEndpointsNuevos_publicos_retornan200() throws Exception {
+        CatalogoProducto prod = new CatalogoProducto();
+        prod.setIdServicio("79");
+        prod.setIdProducto("101");
+        prod.setServicio("CFE");
+        prod.setNombreProducto("Pago CFE");
+
+        when(catalogoService.buscarCatalogoPaginado("2", null, "CFE", 0, 5))
+                .thenReturn(PageResponse.<CatalogoProducto>builder()
+                        .contenido(List.of(prod))
+                        .paginaActual(0)
+                        .tamanoPagina(5)
+                        .totalElementos(1L)
+                        .totalPaginas(1)
+                        .primera(true)
+                        .ultima(true)
+                        .build());
+        when(catalogoService.obtenerCategorias()).thenReturn(List.of(
+                CatalogoCategoriaResponse.builder()
+                        .idCatTipoServicio("2")
+                        .totalProductos(1L)
+                        .servicios(List.of("CFE"))
+                        .build()));
+        when(catalogoService.obtenerDetalleProducto("79", "101")).thenReturn(prod);
+
+        mockMvc.perform(get("/gestopago/catalogo")
+                        .param("categoria", "2")
+                        .param("q", "CFE")
+                        .param("page", "0")
+                        .param("size", "5"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contenido[0].idProducto").value("101"))
+                .andExpect(jsonPath("$.totalElementos").value(1));
+
+        mockMvc.perform(get("/gestopago/catalogo/categorias"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].idCatTipoServicio").value("2"))
+                .andExpect(jsonPath("$[0].servicios[0]").value("CFE"));
+
+        mockMvc.perform(get("/gestopago/catalogo/79/101"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.nombreProducto").value("Pago CFE"));
     }
 }

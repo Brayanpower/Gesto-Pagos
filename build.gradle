@@ -59,6 +59,7 @@ dependencies {
     //Mapeo y utilerias
     implementation 'org.mapstruct:mapstruct:1.6.3'
     //Mail-XML
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
     implementation 'org.glassfish.jaxb:jaxb-runtime:4.0.9'
     implementation 'jakarta.xml.bind:jakarta.xml.bind-api:4.0.0'
     //Lombok

@@ -105,6 +105,31 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(response, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(SesionActivaExistenteException.class)
+    public ResponseEntity<ErrorDetailResponse> handleSesionActivaExistente(SesionActivaExistenteException ex) {
+        log.warn("Conflicto de sesion unica: existe una sesion activa previa");
+        Map<String, String> detalles = new LinkedHashMap<>();
+        detalles.put("codigoError", "SESION_ACTIVA_EXISTENTE");
+        detalles.put("sesionActivaExistente", "true");
+        detalles.put("accionRequerida",
+                "Reenvie la solicitud con forzarCierreSesionAnterior=true para cerrar la sesion anterior e iniciar una nueva");
+        if (ex.getIpOrigenActiva() != null && !ex.getIpOrigenActiva().isBlank()) {
+            detalles.put("ipOrigen", ex.getIpOrigenActiva());
+        }
+        if (ex.getUserAgentActivo() != null && !ex.getUserAgentActivo().isBlank()) {
+            detalles.put("dispositivo", ex.getUserAgentActivo());
+        }
+        if (ex.getFechaInicioSesionActiva() != null) {
+            detalles.put("fechaInicio", ex.getFechaInicioSesionActiva().toString());
+        }
+        ErrorDetailResponse response = new ErrorDetailResponse(
+                HttpStatus.CONFLICT.value(),
+                ex.getMessage(),
+                detalles
+        );
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(PessimisticLockingFailureException.class)
     public ResponseEntity<GenericResponse> handlePessimisticLocking(PessimisticLockingFailureException ex) {
         log.warn("Conflicto de concurrencia al bloquear cuenta bancaria");

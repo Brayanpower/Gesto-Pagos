@@ -31,16 +31,19 @@ public class CuentaServiceImpl implements CuentaService {
     private final CuentaMapper cuentaMapper;
     private final AuthenticatedUserService authenticatedUserService;
     private final TransaccionServicioRepository transaccionServicioRepository;
+    private final EmailNotificationService emailNotificationService;
 
     public CuentaServiceImpl(
             CuentaRepository cuentaRepository,
             CuentaMapper cuentaMapper,
             AuthenticatedUserService authenticatedUserService,
-            TransaccionServicioRepository transaccionServicioRepository) {
+            TransaccionServicioRepository transaccionServicioRepository,
+            EmailNotificationService emailNotificationService) {
         this.cuentaRepository = cuentaRepository;
         this.cuentaMapper = cuentaMapper;
         this.authenticatedUserService = authenticatedUserService;
         this.transaccionServicioRepository = transaccionServicioRepository;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -144,6 +147,19 @@ public class CuentaServiceImpl implements CuentaService {
         cuenta.setFechaRevision(LocalDateTime.now(ZoneId.systemDefault()));
 
         Cuenta actualizada = cuentaRepository.save(cuenta);
+        if (emailNotificationService != null
+                && actualizada.getCliente() != null
+                && actualizada.getCliente().getCorreo() != null
+                && !actualizada.getCliente().getCorreo().isBlank()) {
+            String nombreCompleto = ((actualizada.getCliente().getNombre() != null ? actualizada.getCliente().getNombre() : "")
+                    + " " + (actualizada.getCliente().getApellidoPaterno() != null ? actualizada.getCliente().getApellidoPaterno() : "")).trim();
+            emailNotificationService.enviarNotificacionDictamenCuenta(
+                    actualizada.getCliente().getCorreo(),
+                    nombreCompleto,
+                    actualizada.getNumeroCuenta(),
+                    actualizada.getEstatus(),
+                    actualizada.getObservacionRevision());
+        }
         return cuentaMapper.toResponse(actualizada);
     }
 

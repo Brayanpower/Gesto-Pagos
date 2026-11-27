@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.Optional;
 
 @Repository
@@ -15,6 +16,9 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long
 
     @EntityGraph(attributePaths = {"usuario", "usuario.cliente"})
     Optional<RefreshToken> findWithUsuarioByTokenHash(String tokenHash);
+
+    Optional<RefreshToken> findFirstByUsuarioIdAndRevocadoFalseAndExpiraEnAfterOrderByFechaCreacionDesc(
+            Long usuarioId, LocalDateTime ahora);
 
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("UPDATE RefreshToken rt SET rt.revocado = true WHERE rt.usuario.id = :usuarioId AND rt.revocado = false")
