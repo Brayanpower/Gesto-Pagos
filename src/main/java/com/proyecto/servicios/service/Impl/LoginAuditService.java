@@ -36,6 +36,8 @@ public class LoginAuditService {
     public static final String EVENTO_TOTP_RECUPERACION_EXITO = "TOTP_RECUPERACION_EXITO";
     public static final String EVENTO_TOTP_RECUPERACION_FALLIDA = "TOTP_RECUPERACION_FALLIDA";
     public static final String EVENTO_TOTP_RESET_ADMIN = "TOTP_RESET_ADMIN";
+    public static final String EVENTO_OTP_CORREO_ENVIADO = "OTP_CORREO_ENVIADO";
+    public static final String EVENTO_TOTP_RECUPERACION_CORREO_SOLICITADA = "TOTP_RECUPERACION_CORREO_SOLICITADA";
 
     private static final int MAX_CORREO_LENGTH = 100;
     private static final int MAX_EVENTO_LENGTH = 40;

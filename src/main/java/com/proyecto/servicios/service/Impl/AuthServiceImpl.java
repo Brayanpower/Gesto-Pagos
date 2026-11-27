@@ -3,11 +3,15 @@ package com.proyecto.servicios.service.Impl;
 import com.proyecto.servicios.entity.seguridad.RefreshToken;
 import com.proyecto.servicios.entity.seguridad.Usuario;
 import com.proyecto.servicios.exception.CuentaBloqueadaException;
+import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.SesionActivaExistenteException;
 import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
 import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
@@ -59,6 +63,7 @@ public class AuthServiceImpl implements AuthService {
     private final LoginRateLimiter loginRateLimiter;
     private final MfaService mfaService;
     private final MfaRecoveryService mfaRecoveryService;
+    private final EmailNotificationService emailNotificationService;
 
     @Value("${app.auth.max-failed-attempts:5}")
     private int maxFailedAttempts = 5;
@@ -74,7 +79,8 @@ public class AuthServiceImpl implements AuthService {
             LoginAuditService loginAuditService,
             LoginRateLimiter loginRateLimiter,
             MfaService mfaService,
-            MfaRecoveryService mfaRecoveryService) {
+            MfaRecoveryService mfaRecoveryService,
+            EmailNotificationService emailNotificationService) {
         this.usuarioRepository = usuarioRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
@@ -83,6 +89,7 @@ public class AuthServiceImpl implements AuthService {
         this.loginRateLimiter = loginRateLimiter;
         this.mfaService = mfaService;
         this.mfaRecoveryService = mfaRecoveryService;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -163,9 +170,192 @@ public class AuthServiceImpl implements AuthService {
         validarOForzarSesionUnica(usuario, forzarCierre, meta);
         AuthResponse response = completarLoginExitoso(usuario, meta, now);
         if (requirioEnrolamiento && usuario.isTotpHabilitado()) {
-            response.setCodigosRecuperacion(mfaRecoveryService.generarCodigosRecuperacion(usuario));
+            List<String> codigos = mfaRecoveryService.generarCodigosRecuperacion(usuario);
+            response.setCodigosRecuperacion(codigos);
+            if (emailNotificationService != null) {
+                emailNotificationService.enviarCodigosRecuperacion2fa(
+                        usuario.getCorreo(), obtenerNombreCompleto(usuario), codigos);
+            }
         }
         return response;
+    }
+
+    @Override
+    @Transactional(noRollbackFor = {
+            BadCredentialsException.class,
+            CuentaBloqueadaException.class,
+            DisabledException.class,
+            ReglaNegocioException.class
+    })
+    public void enviarOtpCorreo(EmailOtpSendRequest request, ClientMetadata metadata) {
+        ClientMetadata meta = normalizarMetadata(metadata);
+        String challengeToken = request != null ? request.getChallengeToken() : null;
+        Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+        String correoRateLimit = usuarioDesafio != null ? usuarioDesafio.getCorreo() : null;
+        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), correoRateLimit);
+
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+        if (estaBloqueado(usuarioDesafio, now)) {
+            loginAuditService.registrarEvento(
+                    usuarioDesafio, usuarioDesafio.getCorreo(), LoginAuditService.EVENTO_CUENTA_BLOQUEADA, false, meta,
+                    "Cuenta bloqueada temporalmente por intentos fallidos");
+            throw new CuentaBloqueadaException(MSG_CUENTA_BLOQUEADA);
+        }
+        if (usuarioDesafio != null) {
+            validarUsuarioYClienteActivos(usuarioDesafio, usuarioDesafio.getCorreo(), meta);
+        }
+
+        MfaService.EmailOtpIssueResult issue = mfaService.generarYGuardarOtpCorreo(challengeToken);
+        Usuario usuario = issue.usuario();
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarCodigoOtpCorreo(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    issue.codigoOtp(),
+                    issue.minutosVigencia(),
+                    "Verificacion de acceso 2FA");
+        }
+        loginAuditService.registrarEvento(
+                usuario, usuario.getCorreo(), LoginAuditService.EVENTO_OTP_CORREO_ENVIADO, true, meta,
+                "Codigo OTP enviado por correo electronico");
+    }
+
+    @Override
+    @Transactional(noRollbackFor = {
+            BadCredentialsException.class,
+            CuentaBloqueadaException.class,
+            DisabledException.class,
+            ReglaNegocioException.class
+    })
+    public AuthResponse solicitarRecuperacionCorreo(EmailRecoveryStartRequest request, ClientMetadata metadata) {
+        ClientMetadata meta = normalizarMetadata(metadata);
+        String correo = normalizarCorreo(request != null ? request.getCorreo() : null);
+        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), correo);
+
+        Usuario usuario = usuarioRepository.findWithClienteByCorreo(correo).orElse(null);
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+
+        if (estaBloqueado(usuario, now)) {
+            loginAuditService.registrarEvento(
+                    usuario, correo, LoginAuditService.EVENTO_CUENTA_BLOQUEADA, false, meta,
+                    "Cuenta bloqueada temporalmente por intentos fallidos");
+            throw new CuentaBloqueadaException(MSG_CUENTA_BLOQUEADA);
+        }
+
+        String rawPassword = request != null ? request.getPassword() : null;
+        if (usuario == null) {
+            if (rawPassword != null) {
+                passwordEncoder.matches(rawPassword, DUMMY_BCRYPT_HASH);
+            }
+            throw registrarFalloPassword(null, correo, meta, now);
+        }
+        if (rawPassword == null || !passwordEncoder.matches(rawPassword, usuario.getPasswordHash())) {
+            throw registrarFalloPassword(usuario, correo, meta, now);
+        }
+
+        validarUsuarioYClienteActivos(usuario, correo, meta);
+        MfaService.EmailRecoveryInitResult init = mfaService.iniciarDesafioRecuperacionCorreo(usuario, meta);
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarCodigoOtpCorreo(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    init.codigoOtp(),
+                    init.minutosVigencia(),
+                    "Recuperacion de acceso 2FA");
+        }
+
+        loginAuditService.registrarEvento(
+                usuario, correo, LoginAuditService.EVENTO_TOTP_RECUPERACION_CORREO_SOLICITADA, true, meta,
+                "Codigo OTP de recuperacion 2FA enviado por correo");
+
+        AuthResponse response = new AuthResponse();
+        response.setCodigo(0);
+        response.setMensaje("Codigo OTP de recuperacion enviado a tu correo electronico");
+        response.setTipoToken(null);
+        response.setCorreo(usuario.getCorreo());
+        response.setRol(usuario.getRol());
+        response.setClienteId(obtenerClienteId(usuario));
+        response.setNombreCompleto(obtenerNombreCompleto(usuario));
+        response.setRequiereTotp(true);
+        response.setTotpConfiguracionRequerida(false);
+        response.setChallengeToken(init.challengeToken());
+        response.setOtpCorreoDisponible(true);
+        response.setOtpCorreoEnviado(true);
+        return response;
+    }
+
+    @Override
+    @Transactional(noRollbackFor = {
+            BadCredentialsException.class,
+            CuentaBloqueadaException.class,
+            DisabledException.class
+    })
+    public AuthResponse confirmarRecuperacionCorreo(EmailRecoveryConfirmRequest request, ClientMetadata metadata) {
+        ClientMetadata meta = normalizarMetadata(metadata);
+        String challengeToken = request != null ? request.getChallengeToken() : null;
+        String codigo = request != null ? request.getCodigo() : null;
+
+        Usuario usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+        loginRateLimiter.verificarYRegistrarIntento(meta.ipOrigen(), usuarioDesafio != null ? usuarioDesafio.getCorreo() : null);
+
+        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+        if (estaBloqueado(usuarioDesafio, now)) {
+            loginAuditService.registrarEvento(
+                    usuarioDesafio, usuarioDesafio.getCorreo(), LoginAuditService.EVENTO_CUENTA_BLOQUEADA, false, meta,
+                    "Cuenta bloqueada temporalmente por intentos fallidos");
+            throw new CuentaBloqueadaException(MSG_CUENTA_BLOQUEADA);
+        }
+
+        Usuario usuario;
+        try {
+            usuario = mfaService.validarDesafioRecuperacionCorreo(challengeToken, codigo);
+        } catch (BadCredentialsException ex) {
+            if (usuarioDesafio == null) {
+                usuarioDesafio = mfaService.buscarUsuarioPorChallengeToken(challengeToken).orElse(null);
+            }
+            if (usuarioDesafio != null) {
+                int intentos = incrementarIntentosFallidos(usuarioDesafio);
+                loginAuditService.registrarEvento(
+                        usuarioDesafio, usuarioDesafio.getCorreo(), LoginAuditService.EVENTO_TOTP_RECUPERACION_FALLIDA, false, meta,
+                        "Codigo OTP de recuperacion por correo invalido");
+                if (excedeLimiteIntentos(intentos)) {
+                    throw bloquearUsuarioPorIntentos(
+                            usuarioDesafio, usuarioDesafio.getCorreo(), meta, now,
+                            "Cuenta bloqueada tras superar intentos fallidos de recuperacion 2FA por correo");
+                }
+                usuarioRepository.save(usuarioDesafio);
+            } else {
+                loginAuditService.registrarEvento(
+                        null, CORREO_DESCONOCIDO, LoginAuditService.EVENTO_TOTP_RECUPERACION_FALLIDA, false, meta,
+                        "Codigo OTP de recuperacion por correo invalido");
+            }
+            throw ex;
+        }
+
+        validarUsuarioYClienteActivos(usuario, usuario.getCorreo(), meta);
+        limpiarIntentosFallidos(usuario);
+        usuario.setTotpHabilitado(false);
+        usuario.setTotpSecretEnc(null);
+        usuario.setTotpConfiguradoEn(null);
+        usuario.setTotpUltimoPaso(null);
+        usuario.incrementarTokenVersion();
+        usuarioRepository.save(usuario);
+        refreshTokenService.revocarTodasLasSesiones(usuario.getId());
+        mfaRecoveryService.invalidarCodigos(usuario.getId());
+
+        loginAuditService.registrarEvento(
+                usuario, usuario.getCorreo(), LoginAuditService.EVENTO_TOTP_RECUPERACION_EXITO, true, meta,
+                "Recuperacion 2FA por correo aprobada; sesiones cerradas y reenrolamiento TOTP iniciado");
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarAlertaSeguridad(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    "Recuperación de acceso 2FA por correo",
+                    "Se restableció tu segundo factor mediante verificación por correo y se cerraron todas las sesiones activas.",
+                    meta,
+                    now);
+        }
+        return iniciarDesafioTotp(usuario, usuario.getCorreo(), meta);
     }
 
     @Override
@@ -229,6 +419,15 @@ public class AuthServiceImpl implements AuthService {
         loginAuditService.registrarEvento(
                 usuario, correo, LoginAuditService.EVENTO_TOTP_RECUPERACION_EXITO, true, meta,
                 "Recuperacion 2FA aprobada; sesiones cerradas y reenrolamiento TOTP iniciado");
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarAlertaSeguridad(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    "Recuperación de acceso 2FA con código de respaldo",
+                    "Se utilizó un código de respaldo para restablecer tu 2FA y cerrar todas las sesiones activas.",
+                    meta,
+                    now);
+        }
         return iniciarDesafioTotp(usuario, correo, meta);
     }
 
@@ -365,7 +564,24 @@ public class AuthServiceImpl implements AuthService {
         if (!forzarCierre) {
             verificarAusenciaDeSesionActiva(usuario, meta);
         }
-        return iniciarDesafioTotp(usuario, correo, meta);
+        AuthResponse response = iniciarDesafioTotp(usuario, correo, meta);
+        if ("EMAIL".equalsIgnoreCase(request.getCanalMfa())) {
+            MfaService.EmailOtpIssueResult emailOtp = mfaService.generarYGuardarOtpCorreo(response.getChallengeToken());
+            if (emailNotificationService != null) {
+                emailNotificationService.enviarCodigoOtpCorreo(
+                        usuario.getCorreo(),
+                        obtenerNombreCompleto(usuario),
+                        emailOtp.codigoOtp(),
+                        emailOtp.minutosVigencia(),
+                        "Inicio de sesion");
+            }
+            loginAuditService.registrarEvento(
+                    usuario, correo, LoginAuditService.EVENTO_OTP_CORREO_ENVIADO, true, meta,
+                    "Codigo OTP enviado por correo electronico");
+            response.setOtpCorreoEnviado(true);
+            response.setMensaje("Codigo OTP enviado a tu correo electronico para verificar el acceso");
+        }
+        return response;
     }
 
     private boolean estaBloqueado(Usuario usuario, LocalDateTime now) {
@@ -459,6 +675,15 @@ public class AuthServiceImpl implements AuthService {
         loginAuditService.registrarEvento(
                 usuario, usuario.getCorreo(), LoginAuditService.EVENTO_SESION_FORZADA, true, meta,
                 "Sesion anterior cerrada por confirmacion de nuevo inicio de sesion");
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarAlertaSeguridad(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    "Cierre de sesión en dispositivo anterior",
+                    "Se cerró tu sesión activa previa al autorizar un nuevo inicio de sesión.",
+                    meta,
+                    LocalDateTime.now(ZoneId.systemDefault()));
+        }
     }
 
     private AuthResponse iniciarDesafioTotp(Usuario usuario, String correo, ClientMetadata meta) {
@@ -484,6 +709,7 @@ public class AuthServiceImpl implements AuthService {
         response.setRequiereTotp(true);
         response.setTotpConfiguracionRequerida(challenge.configuracionRequerida());
         response.setChallengeToken(challenge.challengeToken());
+        response.setOtpCorreoDisponible(true);
         if (challenge.configuracionRequerida()) {
             response.setTotpSecret(challenge.totpSecret());
             response.setOtpauthUri(challenge.otpauthUri());
@@ -501,6 +727,15 @@ public class AuthServiceImpl implements AuthService {
         loginAuditService.registrarEvento(
                 usuario, usuario.getCorreo(), LoginAuditService.EVENTO_EXITO, true, meta,
                 "Inicio de sesion exitoso");
+        if (emailNotificationService != null) {
+            emailNotificationService.enviarAlertaSeguridad(
+                    usuario.getCorreo(),
+                    obtenerNombreCompleto(usuario),
+                    "Nuevo inicio de sesión exitoso",
+                    "Se registró un inicio de sesión exitoso en tu cuenta.",
+                    meta,
+                    now);
+        }
         return response;
     }
 

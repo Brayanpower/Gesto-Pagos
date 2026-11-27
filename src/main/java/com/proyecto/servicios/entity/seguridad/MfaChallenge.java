@@ -58,6 +58,15 @@ public class MfaChallenge {
     @Column(name = "user_agent", length = 255)
     private String userAgent;
 
+    @Column(name = "email_otp_hash", length = 64)
+    private String emailOtpHash;
+
+    @Column(name = "email_otp_expira_en")
+    private LocalDateTime emailOtpExpiraEn;
+
+    @Column(name = "email_otp_enviado_en")
+    private LocalDateTime emailOtpEnviadoEn;
+
     @Column(name = "fecha_creacion", nullable = false, updatable = false)
     private LocalDateTime fechaCreacion;
 

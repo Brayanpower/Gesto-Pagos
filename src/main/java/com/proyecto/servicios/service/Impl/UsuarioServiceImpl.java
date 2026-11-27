@@ -7,6 +7,7 @@ import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.UsuarioNotFoundException;
 import com.proyecto.servicios.mapper.UsuarioMapper;
+import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.UsuarioActualizacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaResponse;
@@ -29,6 +30,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -42,6 +45,7 @@ public class UsuarioServiceImpl implements UsuarioService {
     private final PasswordEncoder passwordEncoder;
     private final RefreshTokenRepository refreshTokenRepository;
     private final MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
+    private final EmailNotificationService emailNotificationService;
 
     public UsuarioServiceImpl(
             UsuarioRepository usuarioRepository,
@@ -49,13 +53,15 @@ public class UsuarioServiceImpl implements UsuarioService {
             UsuarioMapper usuarioMapper,
             PasswordEncoder passwordEncoder,
             RefreshTokenRepository refreshTokenRepository,
-            MfaRecoveryCodeRepository mfaRecoveryCodeRepository) {
+            MfaRecoveryCodeRepository mfaRecoveryCodeRepository,
+            EmailNotificationService emailNotificationService) {
         this.usuarioRepository = usuarioRepository;
         this.clienteRepository = clienteRepository;
         this.usuarioMapper = usuarioMapper;
         this.passwordEncoder = passwordEncoder;
         this.refreshTokenRepository = refreshTokenRepository;
         this.mfaRecoveryCodeRepository = mfaRecoveryCodeRepository;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -258,6 +264,18 @@ public class UsuarioServiceImpl implements UsuarioService {
         refreshTokenRepository.revocarTodosPorUsuarioId(usuarioId);
         mfaRecoveryCodeRepository.deleteByUsuarioId(usuarioId);
         log.info("TOTP restablecido por administrador para usuario ID {}", usuarioId);
+        if (emailNotificationService != null) {
+            String nombre = guardado.getCliente() != null && guardado.getCliente().getNombre() != null
+                    ? guardado.getCliente().getNombre()
+                    : guardado.getCorreo();
+            emailNotificationService.enviarAlertaSeguridad(
+                    guardado.getCorreo(),
+                    nombre,
+                    "Restablecimiento de 2FA por administrador",
+                    "Un administrador restablecio tu autenticacion 2FA y cerro tus sesiones activas.",
+                    ClientMetadata.desconocido(),
+                    LocalDateTime.now(ZoneId.systemDefault()));
+        }
 
         return construirResponse(
                 guardado,

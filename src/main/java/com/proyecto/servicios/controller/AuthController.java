@@ -6,6 +6,9 @@ import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
 import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
@@ -83,6 +86,40 @@ public class AuthController {
             @Valid @RequestBody TotpRecoveryRequest request,
             HttpServletRequest httpRequest) {
         return ResponseEntity.ok(authService.recuperarAccesoTotp(request, extraerMetadata(httpRequest)));
+    }
+
+    @PostMapping(value = "/otp/correo/enviar", produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(
+            summary = "Enviar código OTP temporal por correo electrónico",
+            description = "Genera y envía al correo del usuario un código temporal de 6 dígitos asociado al challengeToken activo"
+    )
+    public ResponseEntity<GenericResponse> enviarOtpCorreo(
+            @Valid @RequestBody EmailOtpSendRequest request,
+            HttpServletRequest httpRequest) {
+        authService.enviarOtpCorreo(request, extraerMetadata(httpRequest));
+        return ResponseEntity.ok(respuestaExitosa("Codigo OTP enviado al correo electronico registrado"));
+    }
+
+    @PostMapping(value = "/totp/recuperar/solicitar-correo", produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(
+            summary = "Solicitar código por correo para recuperar 2FA",
+            description = "Valida correo y contraseña y envía un OTP temporal por correo para restablecer el 2FA"
+    )
+    public ResponseEntity<AuthResponse> solicitarRecuperacionCorreo(
+            @Valid @RequestBody EmailRecoveryStartRequest request,
+            HttpServletRequest httpRequest) {
+        return ResponseEntity.ok(authService.solicitarRecuperacionCorreo(request, extraerMetadata(httpRequest)));
+    }
+
+    @PostMapping(value = "/totp/recuperar/confirmar-correo", produces = MediaType.APPLICATION_JSON_VALUE, consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(
+            summary = "Confirmar recuperación 2FA mediante OTP por correo",
+            description = "Valida el OTP recibido por correo, cierra todas las sesiones previas e inicia un nuevo enrolamiento TOTP"
+    )
+    public ResponseEntity<AuthResponse> confirmarRecuperacionCorreo(
+            @Valid @RequestBody EmailRecoveryConfirmRequest request,
+            HttpServletRequest httpRequest) {
+        return ResponseEntity.ok(authService.confirmarRecuperacionCorreo(request, extraerMetadata(httpRequest)));
     }
 
     @GetMapping(value = "/sesion-activa", produces = MediaType.APPLICATION_JSON_VALUE)

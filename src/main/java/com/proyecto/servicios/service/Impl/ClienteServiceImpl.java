@@ -68,6 +68,7 @@ public class ClienteServiceImpl implements ClienteService {
     private final AuthenticatedUserService authenticatedUserService;
     private final RefreshTokenRepository refreshTokenRepository;
     private final TransaccionServicioRepository transaccionServicioRepository;
+    private final EmailNotificationService emailNotificationService;
 
     private final SecureRandom secureRandom = new SecureRandom();
 
@@ -88,7 +89,8 @@ public class ClienteServiceImpl implements ClienteService {
             PasswordEncoder passwordEncoder,
             AuthenticatedUserService authenticatedUserService,
             RefreshTokenRepository refreshTokenRepository,
-            TransaccionServicioRepository transaccionServicioRepository) {
+            TransaccionServicioRepository transaccionServicioRepository,
+            EmailNotificationService emailNotificationService) {
         this.clienteRepository = clienteRepository;
         this.domicilioClienteRepository = domicilioClienteRepository;
         this.cuentaRepository = cuentaRepository;
@@ -106,6 +108,7 @@ public class ClienteServiceImpl implements ClienteService {
         this.authenticatedUserService = authenticatedUserService;
         this.refreshTokenRepository = refreshTokenRepository;
         this.transaccionServicioRepository = transaccionServicioRepository;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -201,6 +204,13 @@ public class ClienteServiceImpl implements ClienteService {
         Usuario usuarioGuardado = usuarioRepository.save(usuario);
         clienteGuardado.setUsuario(usuarioGuardado);
         log.info("Paso 4/4 exitoso: Usuario de acceso creado con ID {}", usuarioGuardado.getId());
+
+        if (emailNotificationService != null) {
+            String nombreCompleto = ((clienteGuardado.getNombre() != null ? clienteGuardado.getNombre() : "")
+                    + " " + (clienteGuardado.getApellidoPaterno() != null ? clienteGuardado.getApellidoPaterno() : "")).trim();
+            emailNotificationService.enviarNotificacionOnboardingRecibido(
+                    correo, nombreCompleto, numeroCuenta, saldoInicial);
+        }
 
         ClienteResponse response = clienteMapper.toResponse(clienteGuardado);
         response.setCodigo(0);

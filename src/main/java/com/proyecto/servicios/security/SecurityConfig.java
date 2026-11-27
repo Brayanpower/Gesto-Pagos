@@ -91,7 +91,10 @@ public class SecurityConfig {
                     auth.requestMatchers(HttpMethod.POST,
                                     "/auth/login",
                                     "/auth/totp/verificar",
+                                    "/auth/otp/correo/enviar",
                                     "/auth/totp/recuperar",
+                                    "/auth/totp/recuperar/solicitar-correo",
+                                    "/auth/totp/recuperar/confirmar-correo",
                                     "/auth/refresh",
                                     "/auth/logout")
                             .permitAll()

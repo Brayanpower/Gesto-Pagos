@@ -29,6 +29,8 @@ public class AuthResponse extends GenericResponse {
     private String challengeToken;
     private String totpSecret;
     private String otpauthUri;
+    private Boolean otpCorreoDisponible;
+    private Boolean otpCorreoEnviado;
     private List<String> codigosRecuperacion;
 
     public AuthResponse(String token, String correo, String rol, Long clienteId, String nombreCompleto) {

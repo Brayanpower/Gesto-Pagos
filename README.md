@@ -20,7 +20,7 @@ src/main/java/com/proyecto/servicios/
 └── service/       # Interfaces y capa service.Impl (lógica de negocio, MFA, sesiones, GestoPago)
 ```
 
-- **Migraciones SQL reproducibles**: `src/main/resources/db/migration/V1__...` hasta `V10__mfa_recovery_codes.sql` administradas con **Flyway**.
+- **Migraciones SQL reproducibles**: `src/main/resources/db/migration/V1__...` hasta `V11__mfa_email_otp.sql` administradas con **Flyway**.
 - **Persistencia dual**: PostgreSQL (clientes, cuentas, usuarios, sesiones refresh, desafíos MFA, códigos de recuperación, auditoría y transacciones de servicios) + MongoDB (caché del catálogo GestoPago con actualización diaria y upsert sin ventana vacía).
 
 ---
@@ -53,6 +53,7 @@ src/main/java/com/proyecto/servicios/
    - **Obligatorias**: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `JWT_SECRET` (mínimo 32 bytes), `APP_CRYPTO_KEY` (32 bytes Base64), `APP_CRYPTO_IV` (16 bytes Base64).
    - **GestoPago**: `GESTOPAGO_URL`, `GESTOPAGO_ID_DISTRIBUIDOR`, `GESTOPAGO_CODIGO_DISPOSITIVO`, `GESTOPAGO_PASSWORD`, `GESTOPAGO_API_KEY` (o `GESTOPAGO_BEARER_TOKEN`).
    - **MongoDB**: `MONGODB_URI`.
+   - **Correo SMTP y OTP por email**: `SMTP_HOST`, `SMTP_PORT` (`465`), `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `SMTP_SSL_ENABLE` (`true`), `SMTP_STARTTLS_ENABLE` (`false`), `MAIL_ENABLED` (`true`), `AUTH_EMAIL_OTP_MINUTES` (`5`), `AUTH_EMAIL_OTP_COOLDOWN_SECONDS` (`60`).
    - **Desarrollo local**: `SWAGGER_ENABLED=true`, `SWAGGER_PUBLIC=true`, `APP_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:8080`.
 2. Cargar variables y ejecutar:
    ```bash
@@ -75,9 +76,12 @@ src/main/java/com/proyecto/servicios/
 
 | Servicio / Operación | Método y URL | Auth | Entrada / Parámetros | Respuesta / Códigos HTTP |
 |---|---|---|---|---|
-| Inicio de sesión (con detección de sesión única y TOTP) | `POST /auth/login` | Pública | JSON `{ correo, password, codigoTotp?, forzarCierreSesionAnterior? }` | `200` (`AuthResponse`: desafío TOTP o tokens), `401`, `403`, `409` (`SESION_ACTIVA_EXISTENTE`), `423`, `429` |
-| Verificar desafío TOTP (enrolamiento o 2º paso) | `POST /auth/totp/verificar` | Pública | JSON `{ challengeToken, codigo, forzarCierreSesionAnterior? }` | `200` (`AuthResponse` + `codigosRecuperacion` en primer enrolamiento), `401`, `403`, `409`, `423`, `429` |
+| Inicio de sesión (con detección de sesión única y TOTP / Email OTP) | `POST /auth/login` | Pública | JSON `{ correo, password, codigoTotp?, forzarCierreSesionAnterior?, canalMfa? }` (`TOTP` \| `EMAIL`) | `200` (`AuthResponse`: desafío TOTP/Email OTP o tokens), `401`, `403`, `409` (`SESION_ACTIVA_EXISTENTE`), `423`, `429` |
+| Verificar desafío MFA (TOTP o OTP recibido por correo) | `POST /auth/totp/verificar` | Pública | JSON `{ challengeToken, codigo, forzarCierreSesionAnterior? }` | `200` (`AuthResponse` + `codigosRecuperacion` en primer enrolamiento TOTP), `401`, `403`, `409`, `423`, `429` |
+| Enviar / reenviar código OTP temporal por correo electrónico | `POST /auth/otp/correo/enviar` | Pública | JSON `{ challengeToken }` | `200` (`GenericResponse`), `400`, `401`, `423`, `429` |
 | Recuperar acceso 2FA con código de respaldo | `POST /auth/totp/recuperar` | Pública | JSON `{ correo, password, codigoRecuperacion }` | `200` (desafío `ENROLLMENT` nuevo QR/secreto), `401`, `403`, `423`, `429` |
+| Solicitar OTP por correo para recuperar 2FA | `POST /auth/totp/recuperar/solicitar-correo` | Pública | JSON `{ correo, password }` | `200` (`challengeToken` de recuperación), `401`, `403`, `423`, `429` |
+| Confirmar recuperación 2FA con OTP recibido por correo | `POST /auth/totp/recuperar/confirmar-correo` | Pública | JSON `{ challengeToken, codigo }` | `200` (cierra sesiones previas e inicia `ENROLLMENT` TOTP), `401`, `403`, `423`, `429` |
 | Consultar sesión activa del usuario | `GET /auth/sesion-activa` | Bearer | Header `Authorization: Bearer <jwt>` | `200` (`SesionActivaResponse`), `401` |
 | Renovar Access Token (rotación refresh) | `POST /auth/refresh` | Pública | JSON `{ refreshToken }` | `200` (`AuthResponse`), `401`, `403`, `429` |
 | Cerrar sesión actual | `POST /auth/logout` | Pública | Header `Authorization?`, JSON `{ refreshToken }?` | `200` (`GenericResponse`) |
@@ -109,6 +113,12 @@ src/main/java/com/proyecto/servicios/
 - `GET /cuentas/mi-cuenta`, `GET /cuentas/mi-cuenta/saldo` (`ROLE_CLIENTE`); `GET /cuentas/pendientes`, `PUT /cuentas/{numeroCuenta}/revision` (`ROLE_ADMIN`).
 - `POST /usuarios`, `POST /usuarios/buscar`, `PUT /usuarios/actualizar`, `PUT /usuarios/estado`, **`POST /usuarios/{id}/reset-totp`** (`ROLE_ADMIN`).
 - `GET /catalogos/**` pública; escritura `ROLE_ADMIN`.
+
+### Notificaciones automáticas por correo electrónico (SMTP)
+- **2FA y recuperación**: envío síncrono de OTP de 6 dígitos (`POST /auth/otp/correo/enviar`, `canalMfa="EMAIL"`, `POST /auth/totp/recuperar/solicitar-correo`) y copia asíncrona de los 8 códigos de respaldo tras el primer enrolamiento TOTP.
+- **Alertas de seguridad**: notificación asíncrona ante inicio de sesión exitoso, cierre forzado de sesión previa, recuperación 2FA o reset administrativo TOTP (`POST /usuarios/{id}/reset-totp`).
+- **Comprobante de compra GestoPago**: envío asíncrono con folio UPC, servicio, monto, cuenta enmascarada, autorización y saldo disponible al confirmarse `EXITOSA` (directa o por conciliación).
+- **Onboarding y dictamen**: confirmación al registrar cliente (`PENDIENTE_REVISION`) y notificación cuando el administrador cambia el estatus de la cuenta (`ACTIVA`, `RECHAZADA`, etc.).
 
 ---
 

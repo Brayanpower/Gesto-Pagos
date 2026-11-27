@@ -20,6 +20,7 @@ import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.PagoServicioRespon
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.ReservaSaldoCommand;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTx;
 import com.proyecto.servicios.model.gestopago.GestoPagoSendTx.SendTxRequest;
+import com.proyecto.servicios.model.notificacion.ComprobantePagoEmailData;
 import com.proyecto.servicios.repositorys.cuentas.CuentaRepository;
 import com.proyecto.servicios.repositorys.gestopago.TransaccionServicioRepository;
 import com.proyecto.servicios.security.AuthenticatedUserService;
@@ -71,6 +72,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
     private final TransaccionServicioRepository transaccionRepository;
     private final CuentaRepository cuentaRepository;
     private final AuthenticatedUserService authenticatedUserService;
+    private final EmailNotificationService emailNotificationService;
 
     @Value("${gestopago.tx.unidad:GPS83-TPV-17}")
     private String unidadDistribuidor;
@@ -96,13 +98,15 @@ public class PagoServicioServiceImpl implements PagoServicioService {
             GestoPagoSendTxService gestoPagoSendTxService,
             TransaccionServicioRepository transaccionRepository,
             CuentaRepository cuentaRepository,
-            AuthenticatedUserService authenticatedUserService) {
+            AuthenticatedUserService authenticatedUserService,
+            EmailNotificationService emailNotificationService) {
         this.catalogoService = catalogoService;
         this.persistenceService = persistenceService;
         this.gestoPagoSendTxService = gestoPagoSendTxService;
         this.transaccionRepository = transaccionRepository;
         this.cuentaRepository = cuentaRepository;
         this.authenticatedUserService = authenticatedUserService;
+        this.emailNotificationService = emailNotificationService;
     }
 
     @Override
@@ -164,7 +168,7 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         }
 
         // Fase 3: Tratamiento del resultado y conciliacion ante estados indeterminados
-        return resolverResultadoOperacion(tx, resultadoProveedor);
+        return resolverResultadoOperacion(tx, resultadoProveedor, cliente);
     }
 
     @Override
@@ -340,10 +344,12 @@ public class PagoServicioServiceImpl implements PagoServicioService {
 
     private PagoServicioResponse resolverResultadoOperacion(
             TransaccionServicio tx,
-            GestoPagoTxResult resultado) {
+            GestoPagoTxResult resultado,
+            Cliente cliente) {
 
         if (resultado.getEstado() == EstadoProveedor.APROBADA) {
             TransaccionServicio confirmada = persistenceService.confirmarExito(tx.getId(), resultado);
+            notificarComprobantePagoExitoso(confirmada, cliente);
             return aPagoServicioResponse(confirmada, false);
         }
 
@@ -389,7 +395,9 @@ public class PagoServicioServiceImpl implements PagoServicioService {
 
         if (verificacion.getEstado() == EstadoProveedor.APROBADA) {
             log.info("Conciliacion exitosa: proveedor confirmo aplicacion para upc={}", tx.getUpc());
-            return persistenceService.confirmarExito(tx.getId(), verificacion);
+            TransaccionServicio confirmada = persistenceService.confirmarExito(tx.getId(), verificacion);
+            notificarComprobantePagoExitoso(confirmada, null);
+            return confirmada;
         }
 
         if (verificacion.getEstado() == EstadoProveedor.RECHAZADA_PROVEEDOR) {
@@ -585,6 +593,41 @@ public class PagoServicioServiceImpl implements PagoServicioService {
         Cliente cliente = validarYObtenerClienteActivo(usuario);
         if (tx.getCliente() == null || !tx.getCliente().getId().equals(cliente.getId())) {
             throw new AccessDeniedException("No tiene autorizacion para consultar o conciliar esta transaccion.");
+        }
+    }
+
+    private void notificarComprobantePagoExitoso(TransaccionServicio confirmada, Cliente clienteOpcional) {
+        if (emailNotificationService == null || confirmada == null) {
+            return;
+        }
+        try {
+            Cliente cliente = clienteOpcional;
+            if (cliente == null && confirmada.getNumeroCuenta() != null) {
+                cliente = cuentaRepository.findWithClienteByNumeroCuenta(confirmada.getNumeroCuenta())
+                        .map(Cuenta::getCliente)
+                        .orElse(null);
+            }
+            if (cliente == null || cliente.getCorreo() == null || cliente.getCorreo().isBlank()) {
+                return;
+            }
+            String nombreCompleto = ((cliente.getNombre() != null ? cliente.getNombre() : "")
+                    + " " + (cliente.getApellidoPaterno() != null ? cliente.getApellidoPaterno() : "")).trim();
+            ComprobantePagoEmailData data = new ComprobantePagoEmailData(
+                    confirmada.getUpc(),
+                    confirmada.getNumeroCuenta(),
+                    confirmada.getNombreServicio(),
+                    confirmada.getNombreProducto(),
+                    confirmada.getMonto(),
+                    confirmada.getSaldoPosterior(),
+                    confirmada.getTelefono(),
+                    confirmada.getReferencia(),
+                    confirmada.getFolioProveedor(),
+                    confirmada.getNumAutorizacion(),
+                    confirmada.getFechaCreacion());
+            emailNotificationService.enviarComprobantePagoServicio(cliente.getCorreo(), nombreCompleto, data);
+        } catch (RuntimeException ex) {
+            log.warn("No se pudo despachar comprobante por correo para upc={}: {}",
+                    confirmada.getUpc(), ex.getClass().getSimpleName());
         }
     }
 

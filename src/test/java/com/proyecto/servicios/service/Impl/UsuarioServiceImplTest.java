@@ -7,6 +7,7 @@ import com.proyecto.servicios.exception.ReglaNegocioException;
 import com.proyecto.servicios.exception.ResourceNotFoundException;
 import com.proyecto.servicios.exception.UsuarioNotFoundException;
 import com.proyecto.servicios.mapper.UsuarioMapper;
+import com.proyecto.servicios.model.seguridad.ClientMetadata;
 import com.proyecto.servicios.model.seguridad.UsuarioActualizacionRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaRequest;
 import com.proyecto.servicios.model.seguridad.UsuarioBusquedaResponse;
@@ -31,6 +32,7 @@ import org.springframework.security.authentication.UsernamePasswordAuthenticatio
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -56,6 +58,7 @@ class UsuarioServiceImplTest {
     @Mock private PasswordEncoder passwordEncoder;
     @Mock private RefreshTokenRepository refreshTokenRepository;
     @Mock private MfaRecoveryCodeRepository mfaRecoveryCodeRepository;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private UsuarioServiceImpl servicio;
@@ -410,6 +413,13 @@ class UsuarioServiceImplTest {
         assertEquals(3L, existente.getTokenVersion());
         verify(refreshTokenRepository).revocarTodosPorUsuarioId(10L);
         verify(mfaRecoveryCodeRepository).deleteByUsuarioId(10L);
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                org.mockito.ArgumentMatchers.eq("cliente@banco.com"),
+                anyString(),
+                anyString(),
+                anyString(),
+                any(ClientMetadata.class),
+                any(LocalDateTime.class));
     }
 
     private UsuarioCreacionRequest creacionValida() {

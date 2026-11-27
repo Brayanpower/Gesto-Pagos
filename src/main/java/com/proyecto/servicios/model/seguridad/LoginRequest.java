@@ -29,6 +29,9 @@ public class LoginRequest {
 
     private Boolean forzarCierreSesionAnterior;
 
+    @Pattern(regexp = "^(?i)(TOTP|EMAIL)$", message = "El canal MFA debe ser TOTP o EMAIL")
+    private String canalMfa;
+
     public LoginRequest(String correo, String password) {
         this.correo = correo;
         this.password = password;
@@ -38,5 +41,12 @@ public class LoginRequest {
         this.correo = correo;
         this.password = password;
         this.codigoTotp = codigoTotp;
+    }
+
+    public LoginRequest(String correo, String password, String codigoTotp, Boolean forzarCierreSesionAnterior) {
+        this.correo = correo;
+        this.password = password;
+        this.codigoTotp = codigoTotp;
+        this.forzarCierreSesionAnterior = forzarCierreSesionAnterior;
     }
 }

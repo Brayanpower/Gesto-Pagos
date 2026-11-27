@@ -9,6 +9,9 @@ import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
 import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
@@ -72,6 +75,7 @@ class AuthServiceImplTest {
     @Mock private LoginRateLimiter loginRateLimiter;
     @Mock private MfaService mfaService;
     @Mock private MfaRecoveryService mfaRecoveryService;
+    @Mock private EmailNotificationService emailNotificationService;
 
     @InjectMocks
     private AuthServiceImpl servicio;
@@ -639,6 +643,108 @@ class AuthServiceImplTest {
 
         SesionActivaResponse inactiva = servicio.consultarSesionActiva();
         assertFalse(inactiva.isActiva());
+    }
+
+    @Test
+    @DisplayName("Login con canalMfa=EMAIL envia codigo OTP al correo y marca otpCorreoEnviado=true")
+    void login_canalMfaEmail_enviaOtpPorCorreo() {
+        Usuario usuario = usuarioActivo(true, true);
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("chal-email-1", false, null, null));
+        when(mfaService.generarYGuardarOtpCorreo("chal-email-1"))
+                .thenReturn(new MfaService.EmailOtpIssueResult(usuario, "654321", 5L));
+
+        LoginRequest req = new LoginRequest(CORREO, PASSWORD);
+        req.setCanalMfa("EMAIL");
+
+        AuthResponse response = servicio.login(req, METADATA);
+
+        assertTrue(response.getRequiereTotp());
+        assertTrue(response.getOtpCorreoDisponible());
+        assertTrue(response.getOtpCorreoEnviado());
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "654321", 5L, "Inicio de sesion");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_OTP_CORREO_ENVIADO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("enviarOtpCorreo genera y envia codigo OTP por correo y audita evento")
+    void enviarOtpCorreo_exito_enviaCorreoYAudita() {
+        Usuario usuario = usuarioActivo(true, true);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-99")).thenReturn(Optional.of(usuario));
+        when(mfaService.generarYGuardarOtpCorreo("chal-99"))
+                .thenReturn(new MfaService.EmailOtpIssueResult(usuario, "112233", 5L));
+
+        servicio.enviarOtpCorreo(new EmailOtpSendRequest("chal-99"), METADATA);
+
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "112233", 5L, "Verificacion de acceso 2FA");
+        verify(loginAuditService).registrarEvento(
+                eq(usuario), eq(CORREO), eq(LoginAuditService.EVENTO_OTP_CORREO_ENVIADO),
+                eq(true), eq(METADATA), anyString());
+    }
+
+    @Test
+    @DisplayName("solicitarRecuperacionCorreo y confirmarRecuperacionCorreo completan recuperacion 2FA por email")
+    void recuperacion2faPorCorreo_flujoCompleto() {
+        Usuario usuario = usuarioActivo(true, true);
+        usuario.setTotpSecretEnc("ENC:viejo");
+        when(usuarioRepository.findWithClienteByCorreo(CORREO)).thenReturn(Optional.of(usuario));
+        when(passwordEncoder.matches(PASSWORD, HASH)).thenReturn(true);
+        when(mfaService.iniciarDesafioRecuperacionCorreo(usuario, METADATA))
+                .thenReturn(new MfaService.EmailRecoveryInitResult("chal-rec-mail", usuario, "778899", 5L));
+
+        AuthResponse inicio = servicio.solicitarRecuperacionCorreo(
+                new EmailRecoveryStartRequest(CORREO, PASSWORD), METADATA);
+
+        assertTrue(inicio.getRequiereTotp());
+        assertTrue(inicio.getOtpCorreoEnviado());
+        assertEquals("chal-rec-mail", inicio.getChallengeToken());
+        verify(emailNotificationService).enviarCodigoOtpCorreo(
+                CORREO, "Juan Garcia", "778899", 5L, "Recuperacion de acceso 2FA");
+
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-rec-mail")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioRecuperacionCorreo("chal-rec-mail", "778899")).thenReturn(usuario);
+        when(mfaService.iniciarDesafio(usuario, METADATA))
+                .thenReturn(new MfaService.ChallengeInitResult("chal-new-enroll", true, "NEWSECRET", "otpauth://totp/nuevo"));
+
+        AuthResponse confirmado = servicio.confirmarRecuperacionCorreo(
+                new EmailRecoveryConfirmRequest("chal-rec-mail", "778899"), METADATA);
+
+        assertTrue(confirmado.getTotpConfiguracionRequerida());
+        assertEquals("chal-new-enroll", confirmado.getChallengeToken());
+        assertFalse(usuario.isTotpHabilitado());
+        assertNull(usuario.getTotpSecretEnc());
+        assertEquals(1L, usuario.getTokenVersion());
+        verify(refreshTokenService).revocarTodasLasSesiones(10L);
+        verify(mfaRecoveryService).invalidarCodigos(10L);
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                eq(CORREO), eq("Juan Garcia"), anyString(), anyString(), eq(METADATA), any(LocalDateTime.class));
+    }
+
+    @Test
+    @DisplayName("verificarTotp en primer enrolamiento envia codigos de respaldo y alerta de seguridad por correo")
+    void verificarTotp_enrolamiento_enviaCorreosDeRespaldoYAlerta() {
+        Usuario usuario = usuarioActivo(true, false);
+        when(mfaService.buscarUsuarioPorChallengeToken("chal-mail-enroll")).thenReturn(Optional.of(usuario));
+        when(mfaService.validarDesafioYCodigo("chal-mail-enroll", "123456")).thenAnswer(inv -> {
+            usuario.setTotpHabilitado(true);
+            return usuario;
+        });
+        when(jwtService.generateToken(anyMap(), any(UserDetails.class))).thenReturn("jwt-enrolled");
+        when(jwtService.getJwtExpirationSeconds()).thenReturn(900L);
+        when(refreshTokenService.emitirRefreshToken(usuario, METADATA)).thenReturn("refresh-enrolled");
+        when(mfaRecoveryService.generarCodigosRecuperacion(usuario)).thenReturn(List.of("ABCD-2345"));
+
+        servicio.verificarTotp(new TotpVerificationRequest("chal-mail-enroll", "123456"), METADATA);
+
+        verify(emailNotificationService).enviarCodigosRecuperacion2fa(CORREO, "Juan Garcia", List.of("ABCD-2345"));
+        verify(emailNotificationService).enviarAlertaSeguridad(
+                eq(CORREO), eq("Juan Garcia"), anyString(), anyString(), eq(METADATA), any(LocalDateTime.class));
     }
 
     private static Usuario usuarioActivo(boolean totpObligatorio, boolean totpHabilitado) {

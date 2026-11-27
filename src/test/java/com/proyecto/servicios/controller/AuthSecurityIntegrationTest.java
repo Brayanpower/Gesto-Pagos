@@ -8,6 +8,9 @@ import com.proyecto.servicios.model.PageResponse;
 import com.proyecto.servicios.model.seguridad.AuditoriaLoginResponse;
 import com.proyecto.servicios.model.seguridad.AuthResponse;
 import com.proyecto.servicios.model.seguridad.ClientMetadata;
+import com.proyecto.servicios.model.seguridad.EmailOtpSendRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryConfirmRequest;
+import com.proyecto.servicios.model.seguridad.EmailRecoveryStartRequest;
 import com.proyecto.servicios.model.seguridad.LoginRequest;
 import com.proyecto.servicios.model.seguridad.RefreshTokenRequest;
 import com.proyecto.servicios.model.seguridad.SesionActivaResponse;
@@ -416,6 +419,58 @@ class AuthSecurityIntegrationTest {
                 .andExpect(jsonPath("$.activa").value(true))
                 .andExpect(jsonPath("$.correo").value("cliente@banco.com"))
                 .andExpect(jsonPath("$.userAgent").value("WebApp/1.0"));
+    }
+
+    @Test
+    @DisplayName("Endpoints publicos de OTP por correo y recuperacion 2FA por correo validan DTO y retornan 200")
+    void otpCorreoYRecuperacionCorreo_publicos_validanYRetornan200() throws Exception {
+        mockMvc.perform(post("/auth/otp/correo/enviar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailOtpSendRequest("chal-123"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.codigo").value(0));
+
+        verify(authService).enviarOtpCorreo(any(EmailOtpSendRequest.class), any(ClientMetadata.class));
+
+        mockMvc.perform(post("/auth/otp/correo/enviar")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailOtpSendRequest(" "))))
+                .andExpect(status().isBadRequest());
+
+        AuthResponse recoveryInit = new AuthResponse();
+        recoveryInit.setCodigo(0);
+        recoveryInit.setRequiereTotp(true);
+        recoveryInit.setOtpCorreoEnviado(true);
+        recoveryInit.setChallengeToken("chal-mail-rec");
+        when(authService.solicitarRecuperacionCorreo(any(EmailRecoveryStartRequest.class), any(ClientMetadata.class)))
+                .thenReturn(recoveryInit);
+
+        mockMvc.perform(post("/auth/totp/recuperar/solicitar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryStartRequest("cliente@banco.com", "Banco123@"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.otpCorreoEnviado").value(true))
+                .andExpect(jsonPath("$.challengeToken").value("chal-mail-rec"));
+
+        AuthResponse enrollment = new AuthResponse();
+        enrollment.setCodigo(0);
+        enrollment.setRequiereTotp(true);
+        enrollment.setTotpConfiguracionRequerida(true);
+        enrollment.setChallengeToken("chal-enroll-next");
+        when(authService.confirmarRecuperacionCorreo(any(EmailRecoveryConfirmRequest.class), any(ClientMetadata.class)))
+                .thenReturn(enrollment);
+
+        mockMvc.perform(post("/auth/totp/recuperar/confirmar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryConfirmRequest("chal-mail-rec", "123456"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.totpConfiguracionRequerida").value(true))
+                .andExpect(jsonPath("$.challengeToken").value("chal-enroll-next"));
+
+        mockMvc.perform(post("/auth/totp/recuperar/confirmar-correo")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(new EmailRecoveryConfirmRequest("chal-mail-rec", "12"))))
+                .andExpect(status().isBadRequest());
     }
 
     private Usuario crearUsuario(String correo, String rol) {
